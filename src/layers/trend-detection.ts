@@ -108,24 +108,23 @@ export async function runTrendSnapshot(env: Env): Promise<{
   console.log(`\n=== v10 Trend Snapshot: ${today} ===`);
   
   // Get current topic counts from pain_records
+  // Use normalized_topic directly (simpler query for D1 compatibility)
   const topicCounts = await db.prepare(`
     SELECT 
-      COALESCE(pr.normalized_topic, json_extract(pr.topics, '$[0]')) as topic_canonical,
-      pc.id as cluster_id,
-      COUNT(DISTINCT pr.id) as mention_count,
+      normalized_topic as topic_canonical,
+      cluster_id,
+      COUNT(*) as mention_count,
       AVG(CASE 
-        WHEN pr.severity = 'critical' THEN 4
-        WHEN pr.severity = 'high' THEN 3
-        WHEN pr.severity = 'medium' THEN 2
-        WHEN pr.severity = 'low' THEN 1
+        WHEN severity = 'critical' THEN 4
+        WHEN severity = 'high' THEN 3
+        WHEN severity = 'medium' THEN 2
+        WHEN severity = 'low' THEN 1
         ELSE 2 
       END) as avg_severity,
-      COUNT(DISTINCT pr.subreddit) as subreddit_spread
-    FROM pain_records pr
-    LEFT JOIN pain_clusters pc ON pr.cluster_id = pc.id
-    WHERE pr.topics IS NOT NULL
-    GROUP BY COALESCE(pr.normalized_topic, json_extract(pr.topics, '$[0]'))
-    HAVING topic_canonical IS NOT NULL
+      COUNT(DISTINCT subreddit) as subreddit_spread
+    FROM pain_records 
+    WHERE normalized_topic IS NOT NULL
+    GROUP BY normalized_topic
   `).all();
   
   const topics = topicCounts.results || [];
@@ -291,15 +290,24 @@ async function updateTrendSummary(db: D1Database): Promise<void> {
       .map((r: any) => r.mention_count)
       .reverse();
     
-    // Get peak and first seen
-    const stats = await db.prepare(`
-      SELECT 
-        MAX(mention_count) as peak_count,
-        (SELECT snapshot_date FROM pain_trends WHERE topic_canonical = ? AND mention_count = MAX(pt2.mention_count) LIMIT 1) as peak_date,
-        MIN(snapshot_date) as first_seen
-      FROM pain_trends pt2
+    // Get peak and first seen (simplified queries)
+    const peakResult = await db.prepare(`
+      SELECT mention_count, snapshot_date 
+      FROM pain_trends 
       WHERE topic_canonical = ?
-    `).bind(snapshot.topic_canonical, snapshot.topic_canonical).first();
+      ORDER BY mention_count DESC
+      LIMIT 1
+    `).bind(snapshot.topic_canonical).first();
+    
+    const firstSeenResult = await db.prepare(`
+      SELECT MIN(snapshot_date) as first_seen
+      FROM pain_trends 
+      WHERE topic_canonical = ?
+    `).bind(snapshot.topic_canonical).first();
+    
+    const peakCount = (peakResult as any)?.mention_count || snapshot.mention_count;
+    const peakDate = (peakResult as any)?.snapshot_date || today;
+    const firstSeen = (firstSeenResult as any)?.first_seen || today;
     
     await db.prepare(`
       INSERT OR REPLACE INTO trend_summary (
@@ -312,9 +320,9 @@ async function updateTrendSummary(db: D1Database): Promise<void> {
       snapshot.mention_count,
       snapshot.velocity_7d || snapshot.velocity || 0,
       snapshot.trend_status,
-      (stats as any)?.peak_count || snapshot.mention_count,
-      (stats as any)?.peak_date || today,
-      (stats as any)?.first_seen || today,
+      peakCount,
+      peakDate,
+      firstSeen,
       Date.now(),
       JSON.stringify(sparkline)
     ).run();

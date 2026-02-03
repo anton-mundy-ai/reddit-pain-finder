@@ -1,4 +1,4 @@
-// v11: Types with embedding-based clustering + Trends + Market Sizing
+// v12: Types with MVP Features + embedding-based clustering + Trends + Market Sizing
 
 export interface Quote {
   text: string;
@@ -127,6 +127,12 @@ export interface Stats {
   market_estimated?: number;
   market_by_tier?: Record<MarketTier, number>;
   market_avg_confidence?: number;
+  // v12: MVP feature stats
+  mvp_features_total?: number;
+  mvp_features_by_type?: Record<string, number>;
+  mvp_opportunities_with_features?: number;
+  mvp_avg_features_per_opp?: number;
+  mvp_top_priority_features?: number;
   version: string;
   last_updated: number;
 }

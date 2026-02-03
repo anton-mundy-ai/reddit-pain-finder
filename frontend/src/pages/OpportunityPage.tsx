@@ -1,22 +1,34 @@
-// v6.1: Opportunity detail page with topic info
+// v12: Opportunity detail page with MVP Features
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { fetchOpportunity } from '../api';
+import { fetchOpportunity, fetchOpportunityFeatures, MVPFeature } from '../api';
 import { OpportunityDetail, Quote } from '../types';
 
 export default function OpportunityPage() {
   const { id } = useParams();
   const [opportunity, setOpportunity] = useState<OpportunityDetail | null>(null);
+  const [features, setFeatures] = useState<{
+    must_have: MVPFeature[];
+    nice_to_have: MVPFeature[];
+    differentiator: MVPFeature[];
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAllQuotes, setShowAllQuotes] = useState(false);
+  const [expandedFeature, setExpandedFeature] = useState<number | null>(null);
 
   useEffect(() => {
     async function load() {
       if (!id) return;
       try {
-        const data = await fetchOpportunity(parseInt(id));
-        setOpportunity(data.opportunity);
+        const [oppData, featuresData] = await Promise.all([
+          fetchOpportunity(parseInt(id)),
+          fetchOpportunityFeatures(parseInt(id)).catch(() => null)
+        ]);
+        setOpportunity(oppData.opportunity);
+        if (featuresData?.grouped) {
+          setFeatures(featuresData.grouped);
+        }
       } catch (err) {
         setError('Failed to load opportunity');
         console.error(err);
@@ -67,6 +79,10 @@ export default function OpportunityPage() {
   
   const hnQuotes = all_quotes.filter(q => q.subreddit === 'hackernews').length;
   const redditQuotes = all_quotes.length - hnQuotes;
+  
+  const totalFeatures = features 
+    ? features.must_have.length + features.nice_to_have.length + features.differentiator.length 
+    : 0;
 
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -75,6 +91,15 @@ export default function OpportunityPage() {
       case 'medium': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
       case 'low': return 'bg-green-100 text-green-800 border-green-200';
       default: return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
+  
+  const getFeatureTypeBadge = (type: string) => {
+    switch (type) {
+      case 'must_have': return { emoji: '🔴', label: 'Must-have', color: 'bg-red-100 text-red-800 border-red-200' };
+      case 'nice_to_have': return { emoji: '🟡', label: 'Nice-to-have', color: 'bg-yellow-100 text-yellow-800 border-yellow-200' };
+      case 'differentiator': return { emoji: '🔵', label: 'Differentiator', color: 'bg-blue-100 text-blue-800 border-blue-200' };
+      default: return { emoji: '⚪', label: type, color: 'bg-gray-100 text-gray-800 border-gray-200' };
     }
   };
 
@@ -172,6 +197,75 @@ export default function OpportunityPage() {
         )}
       </div>
 
+      {/* MVP Features Section - NEW in v12 */}
+      {features && totalFeatures > 0 && (
+        <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
+          <h2 className="text-lg font-bold text-gray-900 mb-4">
+            🎯 MVP Feature Requirements ({totalFeatures})
+          </h2>
+          
+          {/* Must-have features */}
+          {features.must_have.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-md font-semibold text-red-700 mb-3 flex items-center gap-2">
+                🔴 Must-have ({features.must_have.length})
+                <span className="text-xs font-normal text-gray-500">Core features - build these first</span>
+              </h3>
+              <div className="space-y-3">
+                {features.must_have.map(feature => (
+                  <FeatureCard 
+                    key={feature.id} 
+                    feature={feature} 
+                    expanded={expandedFeature === feature.id}
+                    onToggle={() => setExpandedFeature(expandedFeature === feature.id ? null : feature.id)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Nice-to-have features */}
+          {features.nice_to_have.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-md font-semibold text-yellow-700 mb-3 flex items-center gap-2">
+                🟡 Nice-to-have ({features.nice_to_have.length})
+                <span className="text-xs font-normal text-gray-500">Add after launch</span>
+              </h3>
+              <div className="space-y-3">
+                {features.nice_to_have.map(feature => (
+                  <FeatureCard 
+                    key={feature.id} 
+                    feature={feature}
+                    expanded={expandedFeature === feature.id}
+                    onToggle={() => setExpandedFeature(expandedFeature === feature.id ? null : feature.id)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Differentiator features */}
+          {features.differentiator.length > 0 && (
+            <div>
+              <h3 className="text-md font-semibold text-blue-700 mb-3 flex items-center gap-2">
+                🔵 Differentiators ({features.differentiator.length})
+                <span className="text-xs font-normal text-gray-500">Beat the competition</span>
+              </h3>
+              <div className="space-y-3">
+                {features.differentiator.map(feature => (
+                  <FeatureCard 
+                    key={feature.id} 
+                    feature={feature}
+                    expanded={expandedFeature === feature.id}
+                    onToggle={() => setExpandedFeature(expandedFeature === feature.id ? null : feature.id)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Target Customer & How It Works */}
       <div className="grid md:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
@@ -250,6 +344,63 @@ export default function OpportunityPage() {
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+function FeatureCard({ 
+  feature, 
+  expanded, 
+  onToggle 
+}: { 
+  feature: MVPFeature; 
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  let sourceQuotes: string[] = [];
+  try {
+    sourceQuotes = JSON.parse(feature.source_quotes || '[]');
+  } catch {}
+  
+  return (
+    <div className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 transition-colors">
+      <div className="flex items-start justify-between">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 mb-1">
+            <h4 className="font-semibold text-gray-900">{feature.feature_name}</h4>
+            <span className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded-full">
+              Priority: {feature.priority_score}
+            </span>
+            {feature.mention_count > 1 && (
+              <span className="px-2 py-0.5 text-xs bg-purple-50 text-purple-600 rounded-full">
+                {feature.mention_count} mentions
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-gray-600">{feature.description}</p>
+        </div>
+        {sourceQuotes.length > 0 && (
+          <button 
+            onClick={onToggle}
+            className="ml-3 text-gray-400 hover:text-gray-600"
+          >
+            {expanded ? '▲' : '▼'}
+          </button>
+        )}
+      </div>
+      
+      {expanded && sourceQuotes.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-gray-100">
+          <div className="text-xs font-semibold text-gray-500 mb-2">Source quotes:</div>
+          <div className="space-y-2">
+            {sourceQuotes.map((quote, i) => (
+              <p key={i} className="text-sm text-gray-600 italic pl-3 border-l-2 border-gray-200">
+                "{quote}"
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

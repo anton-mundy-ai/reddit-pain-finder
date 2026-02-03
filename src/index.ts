@@ -1,5 +1,5 @@
-// Reddit Pain Point Finder v11 - Main Worker Entry Point
-// Architecture: Embedding-based semantic clustering + Trend Detection + Market Sizing
+// Reddit Pain Point Finder v12 - Main Worker Entry Point
+// Architecture: Embedding-based semantic clustering + Trend Detection + Market Sizing + MVP Features
 
 import { Env, OpportunityBrief, Quote, PainPointView, TopicView } from './types';
 import { runIngestion } from './layers/ingestion';
@@ -12,6 +12,7 @@ import { runTopicMerge, shouldRunTopicMerge, incrementCronCount } from './layers
 import { runCompetitorMining, getCompetitorStats, getProductComplaints, getFeatureGaps, getCategoryStats, ALL_PRODUCTS, NICHE_VERTICALS } from './layers/competitor-mining';
 import { runTrendSnapshot, getTrends, getTrendHistory, getHotTopics, getCoolingTopics, getTrendStats } from './layers/trend-detection';
 import { runMarketSizing, getMarketEstimate, getAllMarketEstimates, getMarketSizingStats } from './layers/market-sizing';
+import { runMVPFeatureExtraction, getOpportunityFeatures, getAllFeatures, getFeatureStats, FeatureType } from './layers/mvp-features';
 import { generateEmbeddingsBatch, storeEmbedding } from './utils/embeddings';
 import { normalizeTopic, extractBroadCategory } from './utils/normalize';
 
@@ -45,7 +46,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (path === '/health' || path === '/') {
     return jsonResponse({ 
       status: 'ok', 
-      version: 'v11-market-sizing',
+      version: 'v12-mvp-features',
       timestamp: Date.now() 
     });
   }
@@ -229,8 +230,56 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       return jsonResponse({ error: 'Failed to fetch market estimate' }, 500);
     }
   }
+  
+  // ===============================
+  // v12: MVP Feature Endpoints
+  // ===============================
+  
+  // Get all features across opportunities
+  if (path === '/api/features') {
+    try {
+      const limit = parseInt(url.searchParams.get('limit') || '100');
+      const type = url.searchParams.get('type') as FeatureType | undefined;
+      
+      const [features, stats] = await Promise.all([
+        getAllFeatures(env.DB, limit, type || undefined),
+        getFeatureStats(env.DB)
+      ]);
+      
+      return jsonResponse({ features, stats });
+    } catch (error) {
+      console.error('Error fetching features:', error);
+      return jsonResponse({ error: 'Failed to fetch features' }, 500);
+    }
+  }
+  
+  // Get features for a specific opportunity
+  if (path.match(/^\/api\/opportunities\/\d+\/features$/)) {
+    const id = parseInt(path.split('/')[3]);
+    if (!id) return jsonResponse({ error: 'Invalid ID' }, 400);
+    
+    try {
+      const features = await getOpportunityFeatures(env.DB, id);
+      
+      // Group by type for easier frontend consumption
+      const grouped = {
+        must_have: features.filter(f => f.feature_type === 'must_have'),
+        nice_to_have: features.filter(f => f.feature_type === 'nice_to_have'),
+        differentiator: features.filter(f => f.feature_type === 'differentiator')
+      };
+      
+      return jsonResponse({ 
+        features, 
+        grouped,
+        total: features.length 
+      });
+    } catch (error) {
+      console.error('Error fetching opportunity features:', error);
+      return jsonResponse({ error: 'Failed to fetch opportunity features' }, 500);
+    }
+  }
 
-  // v11: Get opportunities with filter control and market data
+  // v12: Get opportunities with filter control and market data
   if (path === '/api/opportunities') {
     const limit = parseInt(url.searchParams.get('limit') || '50');
     const minMentions = parseInt(url.searchParams.get('min') || '5');  // Default 5
@@ -498,6 +547,11 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         total_estimated: 0, by_tier: {}, by_category: {}, avg_confidence: 0
       }));
       
+      // v12: Add MVP feature stats
+      const featureStats = await getFeatureStats(env.DB).catch(() => ({
+        total_features: 0, by_type: {}, opportunities_with_features: 0, avg_features_per_opportunity: 0, top_priority_features: 0
+      }));
+      
       return jsonResponse({
         raw_posts: (postsCount as any)?.count || 0,
         raw_comments: (commentsCount as any)?.count || 0,
@@ -524,7 +578,13 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         market_estimated: marketStats.total_estimated,
         market_by_tier: marketStats.by_tier,
         market_avg_confidence: Math.round((marketStats.avg_confidence || 0) * 100) / 100,
-        version: 'v11-market-sizing',
+        // v12: MVP feature stats
+        mvp_features_total: featureStats.total_features,
+        mvp_features_by_type: featureStats.by_type,
+        mvp_opportunities_with_features: featureStats.opportunities_with_features,
+        mvp_avg_features_per_opp: featureStats.avg_features_per_opportunity,
+        mvp_top_priority_features: featureStats.top_priority_features,
+        version: 'v12-mvp-features',
         last_updated: Date.now()
       });
     } catch (error) {
@@ -606,6 +666,43 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (path === '/api/trigger/estimate-markets' && request.method === 'POST') {
     const result = await runMarketSizing(env);
     return jsonResponse({ success: true, result });
+  }
+  
+  // v12: MVP Feature extraction trigger
+  if (path === '/api/trigger/extract-features' && request.method === 'POST') {
+    const result = await runMVPFeatureExtraction(env);
+    return jsonResponse({ success: true, result });
+  }
+  
+  // v12: Migration endpoint for mvp_features table
+  if (path === '/api/trigger/migrate-v12' && request.method === 'POST') {
+    try {
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS mvp_features (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          opportunity_id INTEGER NOT NULL,
+          feature_name TEXT NOT NULL,
+          feature_type TEXT NOT NULL,
+          description TEXT,
+          priority_score INTEGER NOT NULL DEFAULT 0,
+          mention_count INTEGER NOT NULL DEFAULT 1,
+          source_quotes TEXT,
+          confidence REAL NOT NULL DEFAULT 0.5,
+          extracted_at INTEGER NOT NULL,
+          FOREIGN KEY (opportunity_id) REFERENCES pain_clusters(id),
+          UNIQUE(opportunity_id, feature_name)
+        )
+      `).run();
+      
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_features_opp ON mvp_features(opportunity_id)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_features_type ON mvp_features(feature_type)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_features_priority ON mvp_features(priority_score DESC)`).run();
+      
+      return jsonResponse({ success: true, message: 'v12 migration complete - mvp_features table created' });
+    } catch (error) {
+      console.error('v12 migration error:', error);
+      return jsonResponse({ error: `Migration failed: ${error}` }, 500);
+    }
   }
   
   // v11: Migration endpoint for market_estimates table
@@ -941,10 +1038,10 @@ async function fixAllClusterStats(env: Env): Promise<{ fixed: number }> {
 }
 
 async function runFullPipeline(env: Env): Promise<any> {
-  const results: any = { version: 'v11' };
+  const results: any = { version: 'v12' };
   
   console.log('\n========================================');
-  console.log('Running v11 Pipeline: Market Sizing + Trends + Clustering');
+  console.log('Running v12 Pipeline: MVP Features + Market Sizing + Trends + Clustering');
   console.log('========================================\n');
   
   // Increment cron counter for topic merge scheduling
@@ -1008,8 +1105,14 @@ async function runFullPipeline(env: Env): Promise<any> {
     results.market_sizing = await runMarketSizing(env);
   }
   
+  // v12: MVP Feature extraction (every 2nd cron, offset from market sizing)
+  if (cronCount % 2 === 1) {
+    console.log('\nStep 9: MVP Feature extraction (every 2nd cron, offset)...');
+    results.mvp_features = await runMVPFeatureExtraction(env);
+  }
+  
   console.log('\n========================================');
-  console.log('v11 Pipeline Complete!');
+  console.log('v12 Pipeline Complete!');
   console.log('========================================\n');
   
   return results;

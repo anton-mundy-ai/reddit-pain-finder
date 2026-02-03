@@ -1,6 +1,22 @@
-// v11 API client - Embedding-based clustering + Competitor Mining + Trends + Market Sizing
+// v12 API client - MVP Features + Embedding-based clustering + Competitor Mining + Trends + Market Sizing
 
 export const API_BASE = 'https://ideas.koda-software.com';
+
+// Feature types
+export type FeatureType = 'must_have' | 'nice_to_have' | 'differentiator';
+
+export interface MVPFeature {
+  id: number;
+  opportunity_id: number;
+  feature_name: string;
+  feature_type: FeatureType;
+  description: string;
+  priority_score: number;
+  mention_count: number;
+  source_quotes: string;  // JSON array
+  confidence: number;
+  extracted_at: number;
+}
 
 export async function fetchOpportunities(
   limit: number = 50, 
@@ -76,6 +92,31 @@ export async function fetchMarketEstimates(limit: number = 100, sortBy: 'tam' | 
 export async function fetchMarketEstimate(id: number) {
   const res = await fetch(`${API_BASE}/api/market/${id}`);
   if (!res.ok) throw new Error('Failed to fetch market estimate');
+  return res.json();
+}
+
+// v12: Fetch features for a specific opportunity
+export async function fetchOpportunityFeatures(id: number): Promise<{
+  features: MVPFeature[];
+  grouped: {
+    must_have: MVPFeature[];
+    nice_to_have: MVPFeature[];
+    differentiator: MVPFeature[];
+  };
+  total: number;
+}> {
+  const res = await fetch(`${API_BASE}/api/opportunities/${id}/features`);
+  if (!res.ok) throw new Error('Failed to fetch opportunity features');
+  return res.json();
+}
+
+// v12: Fetch all features across opportunities
+export async function fetchAllFeatures(limit: number = 100, type?: FeatureType) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (type) params.set('type', type);
+  
+  const res = await fetch(`${API_BASE}/api/features?${params}`);
+  if (!res.ok) throw new Error('Failed to fetch features');
   return res.json();
 }
 

@@ -1,8 +1,8 @@
-// Reddit Pain Point Finder v18 - Main Worker Entry Point
-// Architecture: Embedding-based semantic clustering + Trend Detection + Market Sizing + MVP Features + Real-time Alerts
+// Reddit Pain Point Finder v24 - Main Worker Entry Point
+// Architecture: API-only mode (scraping handled by Docker container)
+// Embedding-based semantic clustering + Trend Detection + Market Sizing + MVP Features + Real-time Alerts
 
 import { Env, OpportunityBrief, Quote, PainPointView, TopicView, AuthContext } from './types';
-import { runIngestion } from './layers/ingestion';
 import { runExtraction } from './layers/extraction';
 import { runTagging, getTopicStats } from './layers/tagging';
 import { runClustering, getClusterMembers, mergeSimularClusters, updateClusterStats } from './layers/clustering';
@@ -47,13 +47,74 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return new Response(null, { headers: corsHeaders });
   }
 
-  // Health check
-  if (path === '/health' || path === '/') {
+  // Health check (multiple paths for compatibility)
+  if (path === '/health' || path === '/api/health' || path === '/') {
     return jsonResponse({ 
       status: 'ok', 
-      version: 'v18-auth',
+      version: 'v24',
       timestamp: Date.now() 
     });
+  }
+  
+  // ===============================
+  // Route Aliases (for backward compatibility)
+  // ===============================
+  
+  // Alias: /api/outreach → /api/outreach/stats
+  if (path === '/api/outreach') {
+    try {
+      const result = await env.DB.prepare(`
+        SELECT 
+          COUNT(*) as total,
+          SUM(CASE WHEN outreach_status = 'pending' THEN 1 ELSE 0 END) as pending,
+          SUM(CASE WHEN outreach_status = 'contacted' THEN 1 ELSE 0 END) as contacted,
+          SUM(CASE WHEN outreach_status = 'responded' THEN 1 ELSE 0 END) as responded,
+          SUM(CASE WHEN outreach_status = 'declined' THEN 1 ELSE 0 END) as declined,
+          AVG(fit_score) as avg_fit_score,
+          COUNT(DISTINCT opportunity_id) as opportunities_with_contacts
+        FROM outreach_contacts
+      `).first();
+      
+      return jsonResponse({ stats: result });
+    } catch (error) {
+      console.error('Error fetching outreach stats:', error);
+      return jsonResponse({ error: 'Failed to fetch outreach stats' }, 500);
+    }
+  }
+  
+  // Alias: /api/landing-pages → /api/landings
+  if (path === '/api/landing-pages') {
+    try {
+      const limit = parseInt(url.searchParams.get('limit') || '100');
+      
+      const [landings, stats] = await Promise.all([
+        getAllLandingPages(env.DB, limit),
+        getLandingStats(env.DB)
+      ]);
+      
+      return jsonResponse({ landings, stats });
+    } catch (error) {
+      console.error('Error fetching landing pages:', error);
+      return jsonResponse({ error: 'Failed to fetch landing pages' }, 500);
+    }
+  }
+  
+  // Alias: /api/mvp-features → /api/features
+  if (path === '/api/mvp-features') {
+    try {
+      const limit = parseInt(url.searchParams.get('limit') || '100');
+      const type = url.searchParams.get('type') as FeatureType | undefined;
+      
+      const [features, stats] = await Promise.all([
+        getAllFeatures(env.DB, limit, type || undefined),
+        getFeatureStats(env.DB)
+      ]);
+      
+      return jsonResponse({ features, stats });
+    } catch (error) {
+      console.error('Error fetching features:', error);
+      return jsonResponse({ error: 'Failed to fetch features' }, 500);
+    }
   }
   
   // ===============================
@@ -952,10 +1013,17 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   }
 
   // v7: Enhanced stats endpoint
+  // v24: Consolidated queries for better performance (was 21 queries, now ~8)
   if (path === '/api/stats') {
     try {
-      const [postsCount, commentsCount, painRecordsCount, taggedCount, 
-             clustersCount, productCount, embeddingsCount] = await Promise.all([
+      // Batch 1: All simple count queries in a single Promise.all
+      const [
+        postsCount, commentsCount, painRecordsCount, taggedCount, 
+        clustersCount, productCount, embeddingsCount,
+        topicCount, qualifyingClusters, hnCount, avgClusterSize,
+        aggregateStats, clusterScoreStats, competitorStats, outreachStats
+      ] = await Promise.all([
+        // Basic counts
         env.DB.prepare("SELECT COUNT(*) as count FROM raw_posts").first(),
         env.DB.prepare("SELECT COUNT(*) as count FROM raw_comments").first(),
         env.DB.prepare("SELECT COUNT(*) as count FROM pain_records").first(),
@@ -963,86 +1031,71 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         env.DB.prepare("SELECT COUNT(*) as count FROM pain_clusters").first(),
         env.DB.prepare("SELECT COUNT(*) as count FROM pain_clusters WHERE product_name IS NOT NULL AND social_proof_count >= 5").first(),
         env.DB.prepare("SELECT COUNT(*) as count FROM embeddings").first().catch(() => ({ count: 0 })),
-      ]);
-
-      // Topic stats
-      const [topicCount, qualifyingClusters, hnCount, avgClusterSize] = await Promise.all([
+        // Topic stats
         env.DB.prepare("SELECT COUNT(DISTINCT topic_canonical) as count FROM pain_clusters WHERE topic_canonical IS NOT NULL").first(),
         env.DB.prepare("SELECT COUNT(*) as count FROM pain_clusters WHERE social_proof_count >= 5").first(),
         env.DB.prepare("SELECT COUNT(*) as count FROM raw_comments WHERE subreddit = 'hackernews'").first(),
         env.DB.prepare("SELECT AVG(social_proof_count) as avg FROM pain_clusters WHERE social_proof_count > 0").first(),
+        // v23: Aggregate author/upvote stats
+        env.DB.prepare(`
+          SELECT 
+            COUNT(DISTINCT author) as unique_authors,
+            COALESCE(SUM(source_score), 0) as total_upvotes,
+            COUNT(DISTINCT subreddit) as unique_subreddits
+          FROM pain_records 
+          WHERE author IS NOT NULL AND author != '[deleted]' AND author != 'AutoModerator'
+        `).first().catch(() => ({ unique_authors: 0, total_upvotes: 0, unique_subreddits: 0 })),
+        // v23: Cluster score aggregates
+        env.DB.prepare(`
+          SELECT 
+            COALESCE(SUM(total_score), 0) as total_score_sum,
+            COALESCE(AVG(total_score), 0) as avg_score,
+            COALESCE(SUM(total_upvotes), 0) as cluster_upvotes_sum,
+            COALESCE(SUM(unique_authors), 0) as cluster_authors_sum
+          FROM pain_clusters 
+          WHERE product_name IS NOT NULL AND social_proof_count >= 5
+        `).first().catch(() => ({ total_score_sum: 0, avg_score: 0, cluster_upvotes_sum: 0, cluster_authors_sum: 0 })),
+        // v9: Competitor stats
+        env.DB.prepare(`
+          SELECT 
+            COUNT(*) as total_complaints,
+            COUNT(DISTINCT product_name) as products_tracked,
+            SUM(CASE WHEN feature_gap IS NOT NULL THEN 1 ELSE 0 END) as feature_gaps
+          FROM competitor_mentions
+        `).first().catch(() => ({ total_complaints: 0, products_tracked: 0, feature_gaps: 0 })),
+        // v15: Outreach stats
+        env.DB.prepare(`
+          SELECT 
+            COUNT(*) as total,
+            SUM(CASE WHEN outreach_status = 'pending' THEN 1 ELSE 0 END) as pending,
+            SUM(CASE WHEN outreach_status = 'contacted' THEN 1 ELSE 0 END) as contacted,
+            SUM(CASE WHEN outreach_status = 'responded' THEN 1 ELSE 0 END) as responded,
+            COUNT(DISTINCT opportunity_id) as opportunities_with_contacts
+          FROM outreach_contacts
+        `).first().catch(() => ({ total: 0, pending: 0, contacted: 0, responded: 0, opportunities_with_contacts: 0 })),
       ]);
-      
-      // v23: Aggregate author/upvote stats using proper COUNT(DISTINCT) and SUM
-      const aggregateStats = await env.DB.prepare(`
-        SELECT 
-          COUNT(DISTINCT author) as unique_authors,
-          COALESCE(SUM(source_score), 0) as total_upvotes,
-          COUNT(DISTINCT subreddit) as unique_subreddits
-        FROM pain_records 
-        WHERE author IS NOT NULL AND author != '[deleted]' AND author != 'AutoModerator'
-      `).first().catch(() => ({ unique_authors: 0, total_upvotes: 0, unique_subreddits: 0 }));
-      
-      // v23: Cluster score aggregates
-      const clusterScoreStats = await env.DB.prepare(`
-        SELECT 
-          COALESCE(SUM(total_score), 0) as total_score_sum,
-          COALESCE(AVG(total_score), 0) as avg_score,
-          COALESCE(SUM(total_upvotes), 0) as cluster_upvotes_sum,
-          COALESCE(SUM(unique_authors), 0) as cluster_authors_sum
-        FROM pain_clusters 
-        WHERE product_name IS NOT NULL AND social_proof_count >= 5
-      `).first().catch(() => ({ total_score_sum: 0, avg_score: 0, cluster_upvotes_sum: 0, cluster_authors_sum: 0 }));
 
-      // v9: Add competitor stats
-      const competitorStats = await env.DB.prepare(`
-        SELECT 
-          COUNT(*) as total_complaints,
-          COUNT(DISTINCT product_name) as products_tracked,
-          SUM(CASE WHEN feature_gap IS NOT NULL THEN 1 ELSE 0 END) as feature_gaps
-        FROM competitor_mentions
-      `).first().catch(() => ({ total_complaints: 0, products_tracked: 0, feature_gaps: 0 }));
-      
-      // v10: Add trend stats
-      const trendStats = await getTrendStats(env.DB).catch(() => ({
-        total_tracked: 0, hot_count: 0, rising_count: 0, stable_count: 0, cooling_count: 0, last_snapshot: null
-      }));
-      
-      // v11: Add market sizing stats
-      const marketStats = await getMarketSizingStats(env.DB).catch(() => ({
-        total_estimated: 0, by_tier: {}, by_category: {}, avg_confidence: 0
-      }));
-      
-      // v12: Add MVP feature stats
-      const featureStats = await getFeatureStats(env.DB).catch(() => ({
-        total_features: 0, by_type: {}, opportunities_with_features: 0, avg_features_per_opportunity: 0, top_priority_features: 0
-      }));
-      
-      // v18: Add alert stats
-      const alertStats = await getAlertStats(env.DB).catch(() => ({
-        total: 0, unread: 0, by_type: {}, by_severity: {}, recent_24h: 0
-      }));
-      
-      // v15: Add outreach stats
-      const outreachStats = await env.DB.prepare(`
-        SELECT 
-          COUNT(*) as total,
-          SUM(CASE WHEN outreach_status = 'pending' THEN 1 ELSE 0 END) as pending,
-          SUM(CASE WHEN outreach_status = 'contacted' THEN 1 ELSE 0 END) as contacted,
-          SUM(CASE WHEN outreach_status = 'responded' THEN 1 ELSE 0 END) as responded,
-          COUNT(DISTINCT opportunity_id) as opportunities_with_contacts
-        FROM outreach_contacts
-      `).first().catch(() => ({ total: 0, pending: 0, contacted: 0, responded: 0, opportunities_with_contacts: 0 }));
-      
-      // v13: Add landing page stats
-      const landingStats = await getLandingStats(env.DB).catch(() => ({
-        total_generated: 0, opportunities_with_landing: 0, avg_version: 1, last_generated: null
-      }));
-      
-      // v16: Add geo stats
-      const geoStats = await getGeoStats(env.DB).catch(() => ({
-        regions: [], total: 0
-      }));
+      // Batch 2: Helper function stats (each may have multiple internal queries)
+      const [trendStats, marketStats, featureStats, alertStats, landingStats, geoStats] = await Promise.all([
+        getTrendStats(env.DB).catch(() => ({
+          total_tracked: 0, hot_count: 0, rising_count: 0, stable_count: 0, cooling_count: 0, last_snapshot: null
+        })),
+        getMarketSizingStats(env.DB).catch(() => ({
+          total_estimated: 0, by_tier: {}, by_category: {}, avg_confidence: 0
+        })),
+        getFeatureStats(env.DB).catch(() => ({
+          total_features: 0, by_type: {}, opportunities_with_features: 0, avg_features_per_opportunity: 0, top_priority_features: 0
+        })),
+        getAlertStats(env.DB).catch(() => ({
+          total: 0, unread: 0, by_type: {}, by_severity: {}, recent_24h: 0
+        })),
+        getLandingStats(env.DB).catch(() => ({
+          total_generated: 0, opportunities_with_landing: 0, avg_version: 1, last_generated: null
+        })),
+        getGeoStats(env.DB).catch(() => ({
+          regions: [], total: 0
+        })),
+      ]);
       
       return jsonResponse({
         raw_posts: (postsCount as any)?.count || 0,
@@ -1102,7 +1155,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         unique_subreddits: (aggregateStats as any)?.unique_subreddits || 0,
         cluster_total_score: (clusterScoreStats as any)?.total_score_sum || 0,
         cluster_avg_score: Math.round(((clusterScoreStats as any)?.avg_score || 0) * 10) / 10,
-        version: 'v23-stats',
+        version: 'v24',
         last_updated: Date.now()
       });
     } catch (error) {
@@ -1111,11 +1164,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // Manual trigger endpoints
-  if (path === '/api/trigger/ingest' && request.method === 'POST') {
-    const result = await runIngestion(env);
-    return jsonResponse({ success: true, result });
-  }
+  // Manual trigger endpoints (v24: ingestion removed - handled by Docker scraper)
   if (path === '/api/trigger/extract' && request.method === 'POST') {
     const result = await runExtraction(env);
     return jsonResponse({ success: true, result });
@@ -1794,33 +1843,23 @@ async function fixAllClusterStats(env: Env): Promise<{ fixed: number }> {
 }
 
 async function runFullPipeline(env: Env): Promise<any> {
-  const results: any = { version: 'v16' };
+  const results: any = { version: 'v24' };
   
   console.log('\n========================================');
-  console.log('Running v16 Pipeline: Geo + Alerts + MVP Features + Market Sizing + Trends + Clustering');
+  console.log('Running v24 Pipeline: API-only mode (scraping via Docker)');
+  console.log('Geo + Alerts + MVP Features + Market Sizing + Trends + Clustering');
   console.log('========================================\n');
   
   // Increment cron counter for topic merge scheduling
   const cronCount = await incrementCronCount(env.DB);
   results.cron_count = cronCount;
   
-  // v8: Run ingestion TWICE for more data
-  console.log('Step 1a: First ingestion pass (Reddit + HN)...');
-  const ingestion1 = await runIngestion(env);
+  // v24: Ingestion removed - Docker scraper handles data collection
+  // Data flows: Docker scraper -> D1 DB -> Worker processes existing data
   
-  console.log('\nStep 1b: Second ingestion pass (different sort orders)...');
-  const ingestion2 = await runIngestion(env);
-  
-  results.ingestion = {
-    posts_ingested: ingestion1.posts_ingested + ingestion2.posts_ingested,
-    comments_ingested: ingestion1.comments_ingested + ingestion2.comments_ingested,
-    hn_comments_ingested: ingestion1.hn_comments_ingested + ingestion2.hn_comments_ingested,
-    subreddits_processed: ingestion1.subreddits_processed + ingestion2.subreddits_processed
-  };
-  
-  // v9: Run competitor mining every 3rd cron (after ingestion)
+  // v9: Run competitor mining every 3rd cron
   if (cronCount % 3 === 0) {
-    console.log('\nStep 1.5: Competitor complaint mining (every 3rd cron)...');
+    console.log('\nStep 1: Competitor complaint mining (every 3rd cron)...');
     results.competitor_mining = await runCompetitorMining(env);
   }
   
@@ -1876,7 +1915,7 @@ async function runFullPipeline(env: Env): Promise<any> {
   results.alerts = await runAlertChecks(env.DB);
   
   console.log('\n========================================');
-  console.log('v14 Pipeline Complete!');
+  console.log('v24 Pipeline Complete! (API-only mode)');
   console.log('========================================\n');
   
   return results;

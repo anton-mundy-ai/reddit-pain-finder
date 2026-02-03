@@ -1,7 +1,7 @@
 // Layer 6: Scoring - Rank clusters by opportunity potential
 
 import { Env, PainCluster, PainRecord, ScoringResponse } from '../types';
-import { callGPT4oMini } from '../utils/openai';
+import { callGPT5Nano } from '../utils/openai';
 import { getClusterMembers } from './clustering';
 
 const BATCH_SIZE = 10;
@@ -48,9 +48,9 @@ Workarounds: ${workarounds.join('; ') || 'None'}
 Sample problems: ${members.slice(0, 4).map((m, i) => `${i + 1}. "${m.problem_text.slice(0, 100)}"`).join('\n')}`;
 
   try {
-    const { content: responseText } = await callGPT4oMini(apiKey,
+    const { content: responseText } = await callGPT5Nano(apiKey,
       [{ role: 'system', content: SCORING_PROMPT }, { role: 'user', content: context }],
-      { temperature: 0.2, max_tokens: 600, json_mode: true }
+      { temperature: 0.2, max_completion_tokens: 600, json_mode: true }
     );
     return JSON.parse(responseText) as ScoringResponse;
   } catch (error) {

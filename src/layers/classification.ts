@@ -1,7 +1,7 @@
 // Layer 2: Classification - Use GPT-4o-mini to classify content
 
 import { Env, Classification, ClassificationResponse, RawPost, RawComment } from '../types';
-import { callGPT4oMini } from '../utils/openai';
+import { callGPT5Nano } from '../utils/openai';
 
 const BATCH_SIZE = 5;
 
@@ -34,12 +34,12 @@ async function classifyContent(apiKey: string, content: string, title?: string):
   const fullContent = title ? `Title: ${title}\n\nContent: ${content}` : content;
   
   try {
-    const { content: responseText } = await callGPT4oMini(apiKey,
+    const { content: responseText } = await callGPT5Nano(apiKey,
       [
         { role: 'system', content: CLASSIFICATION_PROMPT },
         { role: 'user', content: fullContent.slice(0, 2000) }
       ],
-      { temperature: 0.1, max_tokens: 200, json_mode: true }
+      { temperature: 0.1, max_completion_tokens: 200, json_mode: true }
     );
     return JSON.parse(responseText) as ClassificationResponse;
   } catch (error) {

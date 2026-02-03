@@ -1,4 +1,4 @@
-// OpenAI API utilities for GPT-4o-mini
+// OpenAI API utilities for GPT-5-nano
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -19,12 +19,12 @@ export interface OpenAIResponse {
   };
 }
 
-export async function callGPT4oMini(
+export async function callGPT5Nano(
   apiKey: string,
   messages: ChatMessage[],
   options: {
     temperature?: number;
-    max_tokens?: number;
+    max_completion_tokens?: number;
     json_mode?: boolean;
   } = {}
 ): Promise<{ content: string; tokens: number }> {
@@ -35,10 +35,10 @@ export async function callGPT4oMini(
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5-nano',
       messages,
       temperature: options.temperature ?? 0.1,
-      max_tokens: options.max_tokens ?? 500,
+      max_completion_tokens: options.max_completion_tokens ?? 500,
       response_format: options.json_mode ? { type: 'json_object' } : undefined
     })
   });

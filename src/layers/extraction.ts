@@ -1,7 +1,7 @@
 // Layer 3: Extraction - Extract structured pain records
 
 import { Env, PainRecord, ExtractionResponse, RawPost, RawComment } from '../types';
-import { callGPT4oMini } from '../utils/openai';
+import { callGPT5Nano } from '../utils/openai';
 import { getUnextractedPainPoints } from './classification';
 
 const BATCH_SIZE = 5;
@@ -33,9 +33,9 @@ async function extractPainPoint(apiKey: string, content: string, title?: string,
   const fullContent = title ? `Title: ${title}${contextNote}\n\nContent: ${content}` : `${contextNote}\nContent: ${content}`;
   
   try {
-    const { content: responseText } = await callGPT4oMini(apiKey,
+    const { content: responseText } = await callGPT5Nano(apiKey,
       [{ role: 'system', content: EXTRACTION_PROMPT }, { role: 'user', content: fullContent.slice(0, 3000) }],
-      { temperature: 0.2, max_tokens: 600, json_mode: true }
+      { temperature: 0.2, max_completion_tokens: 600, json_mode: true }
     );
     return JSON.parse(responseText) as ExtractionResponse;
   } catch (error) {

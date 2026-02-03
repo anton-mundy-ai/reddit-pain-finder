@@ -1,7 +1,7 @@
 // Layer 5: Synthesis - Generate opportunity briefs for clusters
 
 import { Env, PainCluster, PainRecord, SynthesisResponse } from '../types';
-import { callGPT4oMini } from '../utils/openai';
+import { callGPT5Nano } from '../utils/openai';
 import { getClustersNeedingSynthesis, getClusterMembers } from './clustering';
 
 const BATCH_SIZE = 5;
@@ -52,9 +52,9 @@ Workarounds: ${workarounds.length > 0 ? workarounds.join('\n') : 'None mentioned
 Avg severity: ${cluster.avg_severity?.toFixed(1) || 'N/A'}, Avg W2P: ${cluster.avg_w2p?.toFixed(1) || 'N/A'}`;
 
   try {
-    const { content: responseText } = await callGPT4oMini(apiKey,
+    const { content: responseText } = await callGPT5Nano(apiKey,
       [{ role: 'system', content: SYNTHESIS_PROMPT }, { role: 'user', content: context }],
-      { temperature: 0.3, max_tokens: 500, json_mode: true }
+      { temperature: 0.3, max_completion_tokens: 500, json_mode: true }
     );
     return { synthesis: JSON.parse(responseText) as SynthesisResponse, quotes };
   } catch (error) {

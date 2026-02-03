@@ -1,7 +1,7 @@
 // Layer 4: Clustering - Group similar pain points using LLM-based similarity
 
 import { Env, PainRecord, PainCluster } from '../types';
-import { callGPT4oMini } from '../utils/openai';
+import { callGPT5Nano } from '../utils/openai';
 import { getUnclusteredRecords } from './extraction';
 
 const BATCH_SIZE = 15;
@@ -40,9 +40,9 @@ ${clusterList}
 Find the best matching cluster or return null if no good match.`;
 
   try {
-    const { content } = await callGPT4oMini(apiKey,
+    const { content } = await callGPT5Nano(apiKey,
       [{ role: 'system', content: CLUSTERING_PROMPT }, { role: 'user', content: prompt }],
-      { temperature: 0.1, max_tokens: 100, json_mode: true }
+      { temperature: 0.1, max_completion_tokens: 100, json_mode: true }
     );
     const result = JSON.parse(content);
     if (result.best_cluster_id && result.confidence >= 0.6) {

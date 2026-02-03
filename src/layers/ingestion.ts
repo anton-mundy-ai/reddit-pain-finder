@@ -1,28 +1,62 @@
-// Layer 1: Ingestion - Fetch posts and comments from Reddit
+// Layer 1: HIGH THROUGHPUT Ingestion
+// v5: Lower thresholds, more subreddits, more comments
+// Goal: Thousands of pain points, not dozens
 
-import { Env, RedditPost, RedditComment, RawPost, RawComment } from '../types';
+import { Env, RedditPost } from '../types';
 
+// 42 subreddits - same coverage, higher volume
 const SUBREDDITS = [
-  'Entrepreneur', 'smallbusiness', 'startups',
-  'australia', 'melbourne', 'AusFinance', 'sydney', 'brisbane', 'perth', 'adelaide',
-  'homestead', 'farming', 'agriculture', 'tractors', 'ranching'
+  // Australia general
+  'australia', 'melbourne', 'sydney', 'brisbane', 'perth', 'adelaide',
+  'AusFinance', 'AusProperty', 'AusLegal', 'AustralianPolitics',
+  
+  // Business/Startup
+  'Entrepreneur', 'smallbusiness', 'startups', 'SideProject', 'microsaas',
+  'indiehackers', 'SaaS', 'webdev', 'freelance',
+  
+  // Specific verticals
+  'homestead', 'farming', 'agriculture', 'tractors', 'ranching',
+  'RealEstate', 'realestateinvesting', 'landlords',
+  'accounting', 'bookkeeping', 'tax',
+  'ecommerce', 'dropship', 'FulfillmentByAmazon',
+  'restaurateur', 'KitchenConfidential',
+  
+  // Professional services
+  'legaladvice', 'AusLegal', 'Insurance',
+  'contractors', 'Construction', 'HVAC', 'Plumbing', 'Electricians',
+  
+  // Tech adjacent
+  'selfhosted', 'homelab', 'sysadmin'
 ];
 
-const RATE_LIMIT_MS = 1100;
-const POSTS_PER_SUBREDDIT = 25;
-const MIN_SCORE = 2;
-const MAX_AGE_DAYS = 7;
+const RATE_LIMIT_MS = 1000;  // Slightly faster
+
+// v5: LOWER THRESHOLDS for high throughput
+const MIN_POST_SCORE = 20;   // Was 50
+const MIN_COMMENTS = 10;     // Was 20
+
+/**
+ * v5: Fetch MORE comments based on engagement
+ */
+function getCommentLimit(postScore: number, numComments: number): number {
+  // Fetch up to 300 for very hot posts
+  if (postScore >= 500 || numComments >= 200) return 300;
+  if (postScore >= 200 || numComments >= 100) return 200;
+  if (postScore >= 50 || numComments >= 50) return 100;
+  return 50;
+}
 
 async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function fetchSubredditPosts(subreddit: string): Promise<RedditPost[]> {
-  const url = `https://www.reddit.com/r/${subreddit}/new.json?limit=${POSTS_PER_SUBREDDIT}`;
+async function fetchSubredditPosts(subreddit: string, sortType: 'top' | 'hot' = 'top'): Promise<RedditPost[]> {
+  const timeParam = sortType === 'top' ? '&t=week' : '';
+  const url = `https://www.reddit.com/r/${subreddit}/${sortType}.json?limit=100${timeParam}`;  // More posts
   
   try {
     const response = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PainPointFinder/1.0)' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PainPointFinder/5.0)' }
     });
     
     if (!response.ok) {
@@ -32,13 +66,14 @@ async function fetchSubredditPosts(subreddit: string): Promise<RedditPost[]> {
     
     const data = await response.json() as any;
     const posts: RedditPost[] = [];
-    const cutoffTime = Math.floor(Date.now() / 1000) - (MAX_AGE_DAYS * 24 * 60 * 60);
     
     for (const child of data.data?.children || []) {
       const post = child.data;
-      if (post.created_utc < cutoffTime) continue;
-      if (post.score < MIN_SCORE) continue;
-      if (post.over_18 || post.removed_by_category) continue;
+      
+      // v5: Lower thresholds
+      if (post.score < MIN_POST_SCORE) continue;
+      if (post.num_comments < MIN_COMMENTS) continue;
+      if (post.over_18 || post.removed_by_category || post.locked) continue;
       
       posts.push({
         id: post.id,
@@ -53,6 +88,8 @@ async function fetchSubredditPosts(subreddit: string): Promise<RedditPost[]> {
         permalink: `https://reddit.com${post.permalink}`
       });
     }
+    
+    console.log(`r/${subreddit}: Found ${posts.length} posts (score≥${MIN_POST_SCORE}, comments≥${MIN_COMMENTS})`);
     return posts;
   } catch (error) {
     console.error(`Error fetching r/${subreddit}:`, error);
@@ -60,36 +97,60 @@ async function fetchSubredditPosts(subreddit: string): Promise<RedditPost[]> {
   }
 }
 
-async function fetchPostComments(postId: string, subreddit: string): Promise<RedditComment[]> {
-  const url = `https://www.reddit.com/r/${subreddit}/comments/${postId}.json?limit=50&depth=1`;
+/**
+ * v5: Fetch MORE comments for high-volume extraction
+ */
+async function fetchPostComments(
+  postId: string, 
+  subreddit: string,
+  limit: number,
+  postScore: number,
+  postTitle: string
+): Promise<any[]> {
+  const url = `https://www.reddit.com/r/${subreddit}/comments/${postId}.json?limit=${limit}&sort=top&depth=3`;
   
   try {
     const response = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PainPointFinder/1.0)' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PainPointFinder/5.0)' }
     });
     
     if (!response.ok) return [];
     
     const data = await response.json() as any;
-    const comments: RedditComment[] = [];
-    const commentData = data[1]?.data?.children || [];
+    const comments: any[] = [];
     
-    for (const child of commentData) {
-      if (child.kind !== 't1') continue;
-      const comment = child.data;
-      if (!comment.body || comment.body === '[deleted]' || comment.body === '[removed]') continue;
-      if (comment.score < 1) continue;
+    function extractComments(children: any[], depth: number = 0) {
+      if (depth > 2) return;  // Max depth 3
       
-      comments.push({
-        id: comment.id,
-        parent_id: comment.parent_id,
-        body: comment.body,
-        author: comment.author,
-        created_utc: comment.created_utc,
-        score: comment.score,
-        link_id: comment.link_id?.replace('t3_', '') || postId
-      });
+      for (const child of children) {
+        if (child.kind !== 't1') continue;
+        const comment = child.data;
+        
+        if (!comment.body || comment.body === '[deleted]' || comment.body === '[removed]') continue;
+        if (comment.body.length < 40) continue;  // Slightly shorter OK
+        
+        comments.push({
+          id: comment.id,
+          parent_id: comment.parent_id,
+          body: comment.body,
+          author: comment.author,
+          created_utc: comment.created_utc,
+          score: comment.score,
+          link_id: postId,
+          post_score: postScore,
+          post_title: postTitle,
+          subreddit: subreddit
+        });
+        
+        if (comment.replies?.data?.children) {
+          extractComments(comment.replies.data.children, depth + 1);
+        }
+      }
     }
+    
+    const commentData = data[1]?.data?.children || [];
+    extractComments(commentData);
+    
     return comments;
   } catch (error) {
     console.error(`Error fetching comments for ${postId}:`, error);
@@ -97,39 +158,52 @@ async function fetchPostComments(postId: string, subreddit: string): Promise<Red
   }
 }
 
-async function storePost(db: D1Database, post: RedditPost): Promise<boolean> {
+async function storePost(db: D1Database, post: RedditPost, sortType: string): Promise<boolean> {
   try {
     await db.prepare(`
       INSERT OR IGNORE INTO raw_posts 
-      (id, subreddit, title, body, author, created_utc, score, num_comments, url, permalink, fetched_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, subreddit, title, body, author, created_utc, score, num_comments, url, permalink, sort_type, fetched_at, processed)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
     `).bind(
       post.id, post.subreddit, post.title, post.selftext || null, post.author,
       post.created_utc, post.score, post.num_comments, post.url, post.permalink,
-      Math.floor(Date.now() / 1000)
+      sortType, Math.floor(Date.now() / 1000)
     ).run();
     return true;
   } catch (error) {
-    console.error(`Failed to store post ${post.id}:`, error);
     return false;
   }
 }
 
-async function storeComment(db: D1Database, comment: RedditComment): Promise<boolean> {
+async function storeComment(db: D1Database, comment: any): Promise<boolean> {
   try {
     await db.prepare(`
       INSERT OR IGNORE INTO raw_comments
-      (id, post_id, parent_id, body, author, created_utc, score, fetched_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (id, post_id, parent_id, body, author, created_utc, score, post_score, post_title, subreddit, fetched_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      comment.id, comment.link_id, comment.parent_id, comment.body, comment.author,
-      comment.created_utc, comment.score, Math.floor(Date.now() / 1000)
+      comment.id, 
+      comment.link_id, 
+      comment.parent_id, 
+      comment.body, 
+      comment.author,
+      comment.created_utc, 
+      comment.score,
+      comment.post_score,
+      comment.post_title,
+      comment.subreddit,
+      Math.floor(Date.now() / 1000)
     ).run();
     return true;
   } catch (error) {
-    console.error(`Failed to store comment ${comment.id}:`, error);
     return false;
   }
+}
+
+async function updatePostCommentsFetched(db: D1Database, postId: string, count: number): Promise<void> {
+  await db.prepare(`
+    UPDATE raw_posts SET comments_fetched = ?, comments_fetched_at = ? WHERE id = ?
+  `).bind(count, Math.floor(Date.now() / 1000), postId).run();
 }
 
 export async function runIngestion(env: Env): Promise<{
@@ -142,64 +216,83 @@ export async function runIngestion(env: Env): Promise<{
   let totalComments = 0;
   let subredditsProcessed = 0;
   
+  // Get current subreddit rotation index
   const stateResult = await db.prepare(
     "SELECT value FROM processing_state WHERE key = 'subreddits_index'"
   ).first() as { value: string } | null;
   
   let currentIndex = parseInt(stateResult?.value || '0', 10);
-  const subredditsToProcess = 3;
+  
+  // v5: Process MORE subreddits per run (8 instead of 5)
+  const subredditsToProcess = 8;
   
   for (let i = 0; i < subredditsToProcess; i++) {
     const subredditIndex = (currentIndex + i) % SUBREDDITS.length;
     const subreddit = SUBREDDITS[subredditIndex];
     
-    console.log(`Processing r/${subreddit}...`);
-    const posts = await fetchSubredditPosts(subreddit);
+    console.log(`\n=== Processing r/${subreddit} ===`);
+    
+    const sortType = i % 2 === 0 ? 'top' : 'hot';
+    
+    const posts = await fetchSubredditPosts(subreddit, sortType as 'top' | 'hot');
     await sleep(RATE_LIMIT_MS);
     
     for (const post of posts) {
-      const stored = await storePost(db, post);
-      if (stored) totalPosts++;
+      const existing = await db.prepare(
+        "SELECT comments_fetched FROM raw_posts WHERE id = ?"
+      ).bind(post.id).first() as { comments_fetched: number } | null;
       
-      if (post.num_comments >= 3 && post.score >= 5) {
-        await sleep(RATE_LIMIT_MS);
-        const comments = await fetchPostComments(post.id, subreddit);
-        for (const comment of comments) {
-          const commentStored = await storeComment(db, comment);
-          if (commentStored) totalComments++;
+      const stored = await storePost(db, post, sortType);
+      if (stored && !existing) totalPosts++;
+      
+      if (existing && existing.comments_fetched > 0) continue;
+      
+      // v5: More comments
+      const commentLimit = getCommentLimit(post.score, post.num_comments);
+      console.log(`  → ${post.title.slice(0, 50)}... (${post.score}↑) - fetching ${commentLimit} comments`);
+      
+      await sleep(RATE_LIMIT_MS);
+      const comments = await fetchPostComments(post.id, subreddit, commentLimit, post.score, post.title);
+      
+      let storedComments = 0;
+      for (const comment of comments) {
+        if (await storeComment(db, comment)) {
+          totalComments++;
+          storedComments++;
         }
       }
+      
+      await updatePostCommentsFetched(db, post.id, storedComments);
+      console.log(`    Stored ${storedComments} comments`);
     }
     
     subredditsProcessed++;
-    console.log(`Completed r/${subreddit}: ${posts.length} posts`);
   }
   
+  // Update rotation index
   const newIndex = (currentIndex + subredditsToProcess) % SUBREDDITS.length;
   await db.prepare(
-    "UPDATE processing_state SET value = ?, updated_at = ? WHERE key = 'subreddits_index'"
+    "INSERT OR REPLACE INTO processing_state (key, value, updated_at) VALUES ('subreddits_index', ?, ?)"
   ).bind(newIndex.toString(), Math.floor(Date.now() / 1000)).run();
   
   await db.prepare(
-    "UPDATE processing_state SET value = ?, updated_at = ? WHERE key = 'last_ingestion'"
+    "INSERT OR REPLACE INTO processing_state (key, value, updated_at) VALUES ('last_ingestion', ?, ?)"
   ).bind(Math.floor(Date.now() / 1000).toString(), Math.floor(Date.now() / 1000)).run();
+  
+  console.log(`\n=== Ingestion Complete ===`);
+  console.log(`Posts: ${totalPosts}, Comments: ${totalComments}`);
   
   return { posts_ingested: totalPosts, comments_ingested: totalComments, subreddits_processed: subredditsProcessed };
 }
 
-export async function getUnprocessedContent(db: D1Database, limit: number = 50): Promise<{
-  posts: RawPost[];
-  comments: RawComment[];
-}> {
-  const posts = await db.prepare(`
-    SELECT * FROM raw_posts WHERE processed_at IS NULL AND (LENGTH(body) > 50 OR LENGTH(title) > 30)
-    ORDER BY score DESC LIMIT ?
-  `).bind(limit).all() as D1Result<RawPost>;
+export async function getUnprocessedComments(db: D1Database, limit: number = 100): Promise<any[]> {
+  const result = await db.prepare(`
+    SELECT * FROM raw_comments 
+    WHERE is_pain_point IS NULL 
+    AND LENGTH(body) >= 50
+    ORDER BY score DESC 
+    LIMIT ?
+  `).bind(limit).all();
   
-  const comments = await db.prepare(`
-    SELECT * FROM raw_comments WHERE processed_at IS NULL AND LENGTH(body) > 50
-    ORDER BY score DESC LIMIT ?
-  `).bind(limit).all() as D1Result<RawComment>;
-  
-  return { posts: posts.results || [], comments: comments.results || [] };
+  return result.results || [];
 }

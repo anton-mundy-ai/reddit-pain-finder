@@ -1,4 +1,4 @@
-// OpenAI API utilities for GPT-5-nano
+// OpenAI API utilities for GPT-5.2 (quality) and GPT-5-nano (volume)
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -19,28 +19,37 @@ export interface OpenAIResponse {
   };
 }
 
-export async function callGPT5Nano(
+interface CallOptions {
+  max_completion_tokens?: number;
+  json_mode?: boolean;
+}
+
+async function callOpenAI(
   apiKey: string,
+  model: string,
   messages: ChatMessage[],
-  options: {
-    temperature?: number;
-    max_completion_tokens?: number;
-    json_mode?: boolean;
-  } = {}
+  options: CallOptions = {}
 ): Promise<{ content: string; tokens: number }> {
+  const body: any = {
+    model,
+    messages,
+    max_completion_tokens: options.max_completion_tokens ?? 500,
+  };
+  
+  // GPT-5 models don't support custom temperature - only default 1
+  // So we don't include temperature at all
+  
+  if (options.json_mode) {
+    body.response_format = { type: 'json_object' };
+  }
+
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({
-      model: 'gpt-5-nano',
-      messages,
-      temperature: options.temperature ?? 0.1,
-      max_completion_tokens: options.max_completion_tokens ?? 500,
-      response_format: options.json_mode ? { type: 'json_object' } : undefined
-    })
+    body: JSON.stringify(body)
   });
 
   if (!response.ok) {
@@ -54,6 +63,30 @@ export async function callGPT5Nano(
     content: data.choices[0]?.message?.content || '',
     tokens: data.usage?.total_tokens || 0
   };
+}
+
+/**
+ * GPT-5-nano: Fast, cheap model for volume tasks
+ * Use for: Initial filtering, classification, quick decisions
+ */
+export async function callGPT5Nano(
+  apiKey: string,
+  messages: ChatMessage[],
+  options: CallOptions = {}
+): Promise<{ content: string; tokens: number }> {
+  return callOpenAI(apiKey, 'gpt-5-nano', messages, options);
+}
+
+/**
+ * GPT-5.2: High-quality model for nuanced tasks
+ * Use for: Synthesis, scoring, validation, quality extraction
+ */
+export async function callGPT52(
+  apiKey: string,
+  messages: ChatMessage[],
+  options: CallOptions = {}
+): Promise<{ content: string; tokens: number }> {
+  return callOpenAI(apiKey, 'gpt-5.2', messages, options);
 }
 
 export async function createEmbedding(

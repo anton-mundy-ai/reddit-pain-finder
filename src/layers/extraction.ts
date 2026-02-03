@@ -1,67 +1,79 @@
-// Layer 3: Extraction - Extract structured pain records
+// Layer 2: HIGH THROUGHPUT Extraction
+// v5: Fast nano classifier (binary), store verbatim quotes
+// GPT-5-nano for volume - cheap and aggressive
 
-import { Env, PainRecord, ExtractionResponse, RawPost, RawComment } from '../types';
+import { Env, PainRecord } from '../types';
 import { callGPT5Nano } from '../utils/openai';
-import { getUnextractedPainPoints } from './classification';
+import { getUnprocessedComments } from './ingestion';
 
-const BATCH_SIZE = 5;
+// v5: Much larger batch for throughput
+const BATCH_SIZE = 50;
 
-const EXTRACTION_PROMPT = `Extract structured information from this Reddit pain point.
+// v5: SIMPLE binary classifier prompt
+const PAIN_CLASSIFIER_PROMPT = `Is this Reddit comment expressing a PERSONAL problem, frustration, or unmet need?
 
-Respond in JSON:
-{
-  "problem_statement": "Clear 1-2 sentence summary",
-  "persona": "Who has this problem (e.g., 'small business owner', 'Melbourne commuter')",
-  "context": {
-    "industry": "industry/domain or null",
-    "location": "geographic context (prioritize AU) or null",
-    "situation": "specific situation triggering the problem"
-  },
-  "severity": { "score": 1-10, "signals": ["severity indicators"] },
-  "frequency": { "score": 1-10, "signals": ["frequency indicators"] },
-  "workaround": "current workaround or null",
-  "willingness_to_pay": { "score": 1-10, "hints": ["W2P indicators"] },
-  "constraints": ["regulatory, privacy, geographic constraints"],
-  "domain_tags": ["tags like 'saas', 'agriculture', 'finance'"],
-  "confidence": 0-1
-}
+YES if they are:
+- Frustrated about something
+- Describing a problem they have  
+- Wishing something existed or worked better
+- Asking how to solve their problem
+- Complaining about a tool/process
 
-Scoring: Severity = "can't", "frustrated", "desperate"; Frequency = "always", "every week"; W2P = "I'd pay", "costing me", B2B context`;
+NO if they are:
+- Only giving advice (not their own problem)
+- Just sharing information
+- Celebrating a success
+- Making a joke
 
-async function extractPainPoint(apiKey: string, content: string, title?: string, subreddit?: string): Promise<ExtractionResponse | null> {
-  const contextNote = subreddit ? `\nSubreddit: r/${subreddit}` : '';
-  const fullContent = title ? `Title: ${title}${contextNote}\n\nContent: ${content}` : `${contextNote}\nContent: ${content}`;
-  
+Respond ONLY with: {"is_pain": true} or {"is_pain": false}`;
+
+/**
+ * v5: Batch classify comments with nano model
+ * Fast and cheap - we want volume
+ */
+async function classifyComment(apiKey: string, body: string): Promise<boolean> {
   try {
-    const { content: responseText } = await callGPT5Nano(apiKey,
-      [{ role: 'system', content: EXTRACTION_PROMPT }, { role: 'user', content: fullContent.slice(0, 3000) }],
-      { temperature: 0.2, max_completion_tokens: 600, json_mode: true }
+    const { content } = await callGPT5Nano(apiKey,
+      [
+        { role: 'system', content: PAIN_CLASSIFIER_PROMPT },
+        { role: 'user', content: body.slice(0, 1000) }  // Shorter context for speed
+      ],
+      { max_completion_tokens: 20, json_mode: true }
     );
-    return JSON.parse(responseText) as ExtractionResponse;
+    const result = JSON.parse(content);
+    return result.is_pain === true;
   } catch (error) {
-    console.error('Extraction error:', error);
-    return null;
+    // On error, err on side of inclusion
+    return true;
   }
 }
 
-async function storePainRecord(db: D1Database, record: PainRecord): Promise<number | null> {
+/**
+ * Store a pain record - just the quote, simple
+ */
+async function storePainRecord(db: D1Database, record: {
+  source_type: string;
+  source_id: string;
+  subreddit: string;
+  raw_quote: string;
+  author: string | null;
+  source_score: number;
+  source_url: string;
+}): Promise<number | null> {
   try {
     await db.prepare(`
-      INSERT OR REPLACE INTO pain_records
-      (source_type, source_id, subreddit, problem_text, persona, 
-       context_industry, context_location, context_situation,
-       severity_score, frequency_score, w2p_score,
-       severity_signals, frequency_signals, workaround_text, w2p_hints, constraints,
-       domain_tags, extraction_confidence, raw_extraction,
-       source_url, source_author, source_score, source_created_utc, extracted_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO pain_records
+      (source_type, source_id, subreddit, raw_quote, author, source_score, source_url, extracted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      record.source_type, record.source_id, record.subreddit, record.problem_text, record.persona,
-      record.context_industry, record.context_location, record.context_situation,
-      record.severity_score, record.frequency_score, record.w2p_score,
-      record.severity_signals, record.frequency_signals, record.workaround_text, record.w2p_hints, record.constraints,
-      record.domain_tags, record.extraction_confidence, record.raw_extraction,
-      record.source_url, record.source_author, record.source_score, record.source_created_utc, record.extracted_at
+      record.source_type,
+      record.source_id,
+      record.subreddit,
+      record.raw_quote.slice(0, 1000),  // Cap quote length
+      record.author,
+      record.source_score,
+      record.source_url,
+      Math.floor(Date.now() / 1000)
     ).run();
     
     const idResult = await db.prepare(
@@ -74,62 +86,77 @@ async function storePainRecord(db: D1Database, record: PainRecord): Promise<numb
   }
 }
 
-export async function runExtraction(env: Env): Promise<{ extracted: number }> {
-  const db = env.DB;
-  let extracted = 0;
-  
-  const { posts, comments } = await getUnextractedPainPoints(db, BATCH_SIZE);
-  
-  for (const post of posts) {
-    const result = await extractPainPoint(env.OPENAI_API_KEY, post.body || '', post.title, post.subreddit);
-    if (result) {
-      const record: PainRecord = {
-        source_type: 'post', source_id: post.id, subreddit: post.subreddit,
-        problem_text: result.problem_statement, persona: result.persona,
-        context_industry: result.context.industry, context_location: result.context.location, context_situation: result.context.situation,
-        severity_score: result.severity.score, frequency_score: result.frequency.score, w2p_score: result.willingness_to_pay.score,
-        severity_signals: JSON.stringify(result.severity.signals), frequency_signals: JSON.stringify(result.frequency.signals),
-        workaround_text: result.workaround, w2p_hints: JSON.stringify(result.willingness_to_pay.hints),
-        constraints: JSON.stringify(result.constraints), domain_tags: JSON.stringify(result.domain_tags),
-        extraction_confidence: result.confidence, raw_extraction: JSON.stringify(result),
-        source_url: post.permalink, source_author: post.author, source_score: post.score, source_created_utc: post.created_utc,
-        extracted_at: Math.floor(Date.now() / 1000), cluster_id: null
-      };
-      const id = await storePainRecord(db, record);
-      if (id) extracted++;
-    }
-  }
-  
-  for (const comment of comments) {
-    const postResult = await db.prepare("SELECT subreddit, permalink FROM raw_posts WHERE id = ?")
-      .bind(comment.post_id).first() as { subreddit: string; permalink: string } | null;
-    
-    const result = await extractPainPoint(env.OPENAI_API_KEY, comment.body, undefined, postResult?.subreddit);
-    if (result) {
-      const record: PainRecord = {
-        source_type: 'comment', source_id: comment.id, subreddit: postResult?.subreddit || 'unknown',
-        problem_text: result.problem_statement, persona: result.persona,
-        context_industry: result.context.industry, context_location: result.context.location, context_situation: result.context.situation,
-        severity_score: result.severity.score, frequency_score: result.frequency.score, w2p_score: result.willingness_to_pay.score,
-        severity_signals: JSON.stringify(result.severity.signals), frequency_signals: JSON.stringify(result.frequency.signals),
-        workaround_text: result.workaround, w2p_hints: JSON.stringify(result.willingness_to_pay.hints),
-        constraints: JSON.stringify(result.constraints), domain_tags: JSON.stringify(result.domain_tags),
-        extraction_confidence: result.confidence, raw_extraction: JSON.stringify(result),
-        source_url: postResult?.permalink ? `${postResult.permalink}${comment.id}` : null,
-        source_author: comment.author, source_score: comment.score, source_created_utc: comment.created_utc,
-        extracted_at: Math.floor(Date.now() / 1000), cluster_id: null
-      };
-      const id = await storePainRecord(db, record);
-      if (id) extracted++;
-    }
-  }
-  
-  return { extracted };
+/**
+ * Mark comment as processed
+ */
+async function markCommentProcessed(db: D1Database, commentId: string, isPain: boolean): Promise<void> {
+  await db.prepare(`
+    UPDATE raw_comments SET processed_at = ?, is_pain_point = ? WHERE id = ?
+  `).bind(Math.floor(Date.now() / 1000), isPain ? 1 : 0, commentId).run();
 }
 
-export async function getUnclusteredRecords(db: D1Database, limit: number = 50): Promise<PainRecord[]> {
+export async function runExtraction(env: Env): Promise<{ 
+  processed: number;
+  pain_points_found: number;
+  skipped: number;
+}> {
+  const db = env.DB;
+  let processed = 0;
+  let painPointsFound = 0;
+  let skipped = 0;
+  
+  // Get batch of unprocessed comments
+  const comments = await getUnprocessedComments(db, BATCH_SIZE);
+  
+  console.log(`Processing ${comments.length} comments with nano classifier...`);
+  
+  for (const comment of comments) {
+    processed++;
+    
+    // Fast binary classification
+    const isPain = await classifyComment(env.OPENAI_API_KEY, comment.body);
+    
+    // Mark as processed
+    await markCommentProcessed(db, comment.id, isPain);
+    
+    if (!isPain) {
+      skipped++;
+      continue;
+    }
+    
+    // Store pain point with verbatim quote
+    const permalink = `https://reddit.com/r/${comment.subreddit}/comments/${comment.post_id}/_/${comment.id}`;
+    
+    const id = await storePainRecord(db, {
+      source_type: 'comment',
+      source_id: comment.id,
+      subreddit: comment.subreddit,
+      raw_quote: comment.body,
+      author: comment.author,
+      source_score: comment.score || 0,
+      source_url: permalink
+    });
+    
+    if (id) {
+      painPointsFound++;
+      if (painPointsFound % 10 === 0) {
+        console.log(`  Found ${painPointsFound} pain points so far...`);
+      }
+    }
+  }
+  
+  console.log(`\n=== Extraction Complete ===`);
+  console.log(`Processed: ${processed}, Pain points: ${painPointsFound}, Skipped: ${skipped}`);
+  
+  return { processed, pain_points_found: painPointsFound, skipped };
+}
+
+export async function getUnclusteredRecords(db: D1Database, limit: number = 100): Promise<PainRecord[]> {
   const result = await db.prepare(`
-    SELECT * FROM pain_records WHERE cluster_id IS NULL ORDER BY severity_score DESC, w2p_score DESC LIMIT ?
+    SELECT * FROM pain_records 
+    WHERE cluster_id IS NULL 
+    ORDER BY source_score DESC 
+    LIMIT ?
   `).bind(limit).all() as D1Result<PainRecord>;
   return result.results || [];
 }

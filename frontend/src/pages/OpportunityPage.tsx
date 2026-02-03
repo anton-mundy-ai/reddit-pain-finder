@@ -1,132 +1,188 @@
+// v5: Opportunity detail page with all quotes
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { fetchOpportunity } from '../api';
-import { OpportunityDetail, PainRecord } from '../types';
-import ScoreBar from '../components/ScoreBar';
+import { OpportunityDetail, Quote } from '../types';
 
 export default function OpportunityPage() {
-  const { id } = useParams<{ id: string }>();
+  const { id } = useParams();
   const [opportunity, setOpportunity] = useState<OpportunityDetail | null>(null);
-  const [members, setMembers] = useState<PainRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showAllQuotes, setShowAllQuotes] = useState(false);
 
-  useEffect(() => { if (id) loadOpportunity(parseInt(id)); }, [id]);
+  useEffect(() => {
+    async function load() {
+      if (!id) return;
+      try {
+        const data = await fetchOpportunity(parseInt(id));
+        setOpportunity(data.opportunity);
+      } catch (err) {
+        setError('Failed to load opportunity');
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [id]);
 
-  async function loadOpportunity(oppId: number) {
-    setLoading(true);
-    try {
-      const data = await fetchOpportunity(oppId);
-      setOpportunity(data.opportunity);
-      setMembers(data.members);
-    } catch { setError('Failed to load opportunity details.'); }
-    finally { setLoading(false); }
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent"></div>
+      </div>
+    );
   }
 
-  if (loading) return (
-    <div className="text-center py-16">
-      <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-indigo-500 border-t-transparent"></div>
-      <p className="mt-4 text-gray-400">Loading opportunity...</p>
-    </div>
-  );
+  if (error || !opportunity) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
+        <p className="text-red-600">{error || 'Opportunity not found'}</p>
+        <Link to="/" className="text-blue-600 hover:underline mt-2 inline-block">
+          ← Back to list
+        </Link>
+      </div>
+    );
+  }
 
-  if (error || !opportunity) return (
-    <div className="text-center py-16">
-      <p className="text-xl text-red-400">{error || 'Opportunity not found'}</p>
-      <Link to="/" className="mt-4 inline-block text-indigo-400 hover:text-indigo-300">← Back to opportunities</Link>
-    </div>
-  );
+  const {
+    product_name,
+    tagline,
+    how_it_works,
+    target_customer,
+    version,
+    social_proof_count,
+    subreddits,
+    all_quotes,
+    unique_authors,
+    total_upvotes,
+    total_score
+  } = opportunity;
 
-  const { score_breakdown } = opportunity;
+  const displayQuotes = showAllQuotes ? all_quotes : all_quotes.slice(0, 5);
 
   return (
-    <div className="space-y-8">
-      <Link to="/" className="inline-flex items-center gap-2 text-indigo-400 hover:text-indigo-300">← Back to opportunities</Link>
+    <div className="max-w-4xl mx-auto space-y-8">
+      {/* Back link */}
+      <Link to="/" className="text-blue-600 hover:underline inline-flex items-center gap-1">
+        ← Back to all opportunities
+      </Link>
 
-      <div className="bg-dark-700 rounded-xl p-8 border border-dark-600">
-        <div className="flex items-start justify-between gap-8">
-          <div className="flex-1">
-            <h1 className="text-3xl font-bold text-white mb-4">{opportunity.summary}</h1>
-            <p className="text-gray-400 text-lg">{opportunity.problem_statement}</p>
-          </div>
-          <div className="text-center flex-shrink-0">
-            <div className="text-5xl font-bold text-indigo-400">{Math.round(opportunity.total_score)}</div>
-            <div className="text-sm text-gray-500 uppercase tracking-wider mt-1">Total Score</div>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-6 mt-6 pt-6 border-t border-dark-500">
-          <div><div className="text-2xl font-semibold text-white">{opportunity.member_count}</div><div className="text-sm text-gray-400">Pain Points</div></div>
-          <div><div className="text-2xl font-semibold text-white">{opportunity.unique_authors}</div><div className="text-sm text-gray-400">Unique Authors</div></div>
-          <div><div className="text-2xl font-semibold text-white">{opportunity.subreddits.length}</div><div className="text-sm text-gray-400">Subreddits</div></div>
-        </div>
-        <div className="flex flex-wrap gap-2 mt-4">
-          {opportunity.subreddits.map(sub => <span key={sub} className="px-3 py-1 bg-dark-600 rounded-full text-sm text-gray-300">r/{sub}</span>)}
-        </div>
-      </div>
-
-      <div className="grid md:grid-cols-2 gap-8">
-        <div className="bg-dark-700 rounded-xl p-6 border border-dark-600">
-          <h2 className="text-xl font-semibold text-white mb-4">Score Breakdown</h2>
-          <div className="space-y-4">
-            <ScoreBar label="Economic Value" score={score_breakdown.economic} color="bg-green-500" />
-            <ScoreBar label="Solvability" score={score_breakdown.solvability} color="bg-purple-500" />
-            <ScoreBar label="Severity" score={score_breakdown.severity} color="bg-red-500" />
-            <ScoreBar label="Frequency" score={score_breakdown.frequency} color="bg-blue-500" />
-            <ScoreBar label="Competitive Opportunity" score={score_breakdown.competitive} color="bg-yellow-500" />
-            <ScoreBar label="Australia Fit" score={score_breakdown.au_fit} color="bg-cyan-500" />
-          </div>
-        </div>
-
-        <div className="bg-dark-700 rounded-xl p-6 border border-dark-600">
-          <h2 className="text-xl font-semibold text-white mb-4">Who Has This Problem?</h2>
-          {opportunity.personas.length > 0 ? (
-            <ul className="space-y-2">{opportunity.personas.map((p, i) => <li key={i} className="flex items-start gap-2 text-gray-300"><span className="text-indigo-400">→</span>{p}</li>)}</ul>
-          ) : <p className="text-gray-500">No specific personas identified yet.</p>}
-        </div>
-      </div>
-
-      {opportunity.workarounds.length > 0 && (
-        <div className="bg-dark-700 rounded-xl p-6 border border-dark-600">
-          <h2 className="text-xl font-semibold text-white mb-4">Current Workarounds</h2>
-          <ul className="space-y-2">{opportunity.workarounds.map((w, i) => <li key={i} className="flex items-start gap-2 text-gray-300"><span className="text-yellow-400">⚡</span>{w}</li>)}</ul>
-        </div>
-      )}
-
-      <div className="bg-dark-700 rounded-xl p-6 border border-dark-600">
-        <h2 className="text-xl font-semibold text-white mb-4">Voice of the Customer</h2>
-        <div className="space-y-4">
-          {opportunity.top_quotes.length > 0 ? opportunity.top_quotes.map((q, i) => (
-            <blockquote key={i} className="border-l-4 border-indigo-500 pl-4 py-2">
-              <p className="text-gray-300 italic">"{q.text}"</p>
-              <footer className="mt-2 text-sm text-gray-500">
-                — u/{q.author} {q.url && <a href={q.url} target="_blank" rel="noopener noreferrer" className="ml-2 text-indigo-400 hover:text-indigo-300">View on Reddit →</a>}
-              </footer>
-            </blockquote>
-          )) : <p className="text-gray-500">No quotes available yet.</p>}
-        </div>
-      </div>
-
-      {opportunity.open_questions.length > 0 && (
-        <div className="bg-dark-700 rounded-xl p-6 border border-dark-600">
-          <h2 className="text-xl font-semibold text-white mb-4">Open Questions</h2>
-          <ul className="space-y-2">{opportunity.open_questions.map((q, i) => <li key={i} className="flex items-start gap-2 text-gray-300"><span className="text-cyan-400">?</span>{q}</li>)}</ul>
-        </div>
-      )}
-
-      <div className="bg-dark-700 rounded-xl p-6 border border-dark-600">
-        <h2 className="text-xl font-semibold text-white mb-4">All Pain Points ({members.length})</h2>
-        <div className="space-y-4 max-h-96 overflow-y-auto">
-          {members.map((m) => (
-            <div key={m.id} className="p-4 bg-dark-800 rounded-lg border border-dark-600">
-              <p className="text-gray-300">{m.problem_text}</p>
-              <div className="flex items-center gap-4 mt-2 text-sm text-gray-500">
-                <span>r/{m.subreddit}</span>
-                {m.persona && <span>• {m.persona}</span>}
-                {m.source_url && <a href={m.source_url} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:text-indigo-300">View source →</a>}
-              </div>
+      {/* Header */}
+      <div className="bg-white rounded-xl shadow-lg p-8 border border-gray-100">
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <div className="flex items-center gap-3 mb-2">
+              <h1 className="text-3xl font-bold text-gray-900">{product_name}</h1>
+              <span className="px-3 py-1 text-sm font-semibold bg-blue-100 text-blue-700 rounded-full">
+                v{version}
+              </span>
             </div>
+            <p className="text-xl text-gray-600">{tagline}</p>
+          </div>
+          <div className="text-right">
+            <div className="text-4xl font-bold text-emerald-600">{total_score}</div>
+            <div className="text-sm text-gray-500">Score</div>
+          </div>
+        </div>
+
+        {/* Social Proof Stats */}
+        <div className="grid grid-cols-3 gap-4 mt-6 pt-6 border-t border-gray-100">
+          <div>
+            <div className="text-2xl font-bold text-gray-900">👥 {social_proof_count}</div>
+            <div className="text-sm text-gray-500">Total mentions</div>
+          </div>
+          <div>
+            <div className="text-2xl font-bold text-gray-900">{unique_authors}</div>
+            <div className="text-sm text-gray-500">Unique authors</div>
+          </div>
+          <div>
+            <div className="text-2xl font-bold text-gray-900">{subreddits.length}</div>
+            <div className="text-sm text-gray-500">Subreddits</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Target Customer & How It Works */}
+      <div className="grid md:grid-cols-2 gap-6">
+        <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
+          <h2 className="text-lg font-bold text-gray-900 mb-3">🎯 Target Customer</h2>
+          <p className="text-gray-700">{target_customer}</p>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
+          <h2 className="text-lg font-bold text-gray-900 mb-3">⚙️ How It Works</h2>
+          <ul className="space-y-2">
+            {how_it_works.map((feature, i) => (
+              <li key={i} className="flex items-start gap-2 text-gray-700">
+                <span className="text-emerald-500 font-bold">•</span>
+                {feature}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      {/* Subreddits */}
+      <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
+        <h2 className="text-lg font-bold text-gray-900 mb-3">📊 Source Communities</h2>
+        <div className="flex flex-wrap gap-2">
+          {subreddits.map(sub => (
+            <a
+              key={sub}
+              href={`https://reddit.com/r/${sub}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1 bg-orange-50 text-orange-700 rounded-full text-sm hover:bg-orange-100 transition-colors"
+            >
+              r/{sub}
+            </a>
           ))}
         </div>
+      </div>
+
+      {/* All Quotes */}
+      <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold text-gray-900">
+            💬 Real User Quotes ({all_quotes.length})
+          </h2>
+          {all_quotes.length > 5 && (
+            <button
+              onClick={() => setShowAllQuotes(!showAllQuotes)}
+              className="text-blue-600 hover:underline text-sm font-medium"
+            >
+              {showAllQuotes ? 'Show less' : `View all ${all_quotes.length} quotes`}
+            </button>
+          )}
+        </div>
+
+        <div className="space-y-4">
+          {displayQuotes.map((quote, i) => (
+            <QuoteCard key={i} quote={quote} />
+          ))}
+        </div>
+
+        {!showAllQuotes && all_quotes.length > 5 && (
+          <button
+            onClick={() => setShowAllQuotes(true)}
+            className="mt-4 w-full py-3 bg-gray-50 hover:bg-gray-100 rounded-lg text-gray-600 font-medium transition-colors"
+          >
+            Show all {all_quotes.length} quotes
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function QuoteCard({ quote }: { quote: Quote }) {
+  return (
+    <div className="border-l-4 border-blue-200 pl-4 py-2">
+      <p className="text-gray-700 italic">"{quote.text}"</p>
+      <div className="mt-1 text-sm text-gray-500">
+        — u/{quote.author} in <span className="text-orange-600">r/{quote.subreddit}</span>
       </div>
     </div>
   );

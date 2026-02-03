@@ -9,8 +9,8 @@ const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 // Model selection - using GPT-4o family
 const MODELS = {
-  quality: 'gpt-4o',      // Synthesis, scoring, validation
-  volume: 'gpt-4o-mini',  // Filtering, classification
+  quality: 'gpt-5.2',      // Synthesis, scoring, validation
+  volume: 'gpt-5-nano',   // Filtering, classification
 };
 
 export async function callLLM(env, { messages, maxTokens = 1000, jsonMode = false, quality = false }) {

@@ -1,94 +1,163 @@
-// Layer 5: Synthesis - Generate opportunity briefs for clusters
+// Layer 4: PRODUCT SYNTHESIS with GPT-5.2
+// v5: Generate product concepts from clustered pain points
+// Only runs when cluster grows by 10%+
 
-import { Env, PainCluster, PainRecord, SynthesisResponse } from '../types';
-import { callGPT5Nano } from '../utils/openai';
+import { Env, PainCluster, PainRecord, Quote } from '../types';
+import { callGPT52 } from '../utils/openai';
 import { getClustersNeedingSynthesis, getClusterMembers } from './clustering';
 
-const BATCH_SIZE = 5;
+const BATCH_SIZE = 5;  // Expensive model, small batches
 
-const SYNTHESIS_PROMPT = `Create an opportunity brief from this cluster of related pain points.
+// v5: PRODUCT GENERATION PROMPT
+const PRODUCT_PROMPT = `You are a product designer. Create a product concept from these real user quotes expressing the same problem.
+
+QUOTES FROM REAL USERS ({COUNT} total mentions):
+{QUOTES}
+
+SUBREDDITS: {SUBREDDITS}
+
+Generate a product concept that solves this problem.
 
 Respond in JSON:
 {
-  "summary": "1-3 sentence summary of the opportunity/problem space",
-  "personas": ["list of distinct personas affected"],
-  "common_workarounds": ["list of workarounds people currently use"],
-  "open_questions": ["questions needing answers before building a solution"]
+  "product_name": "2-3 words MAX, memorable startup name (e.g., ReviewShield, BookKeepBot, FarmTrack)",
+  "tagline": "10 words MAX, what it does (e.g., 'Defend against review extortion')",
+  "how_it_works": ["Feature 1", "Feature 2", "Feature 3"],
+  "target_customer": "Specific persona (e.g., 'Small e-commerce sellers with 100-1000 monthly orders')"
 }
 
-Make summary actionable, personas specific (not just "users"), workarounds show competitive landscape.`;
+Rules:
+- product_name: Should sound like a real startup. 2-3 words max.
+- tagline: What does it DO? Not what problem it solves. 10 words max.
+- how_it_works: 3 specific, actionable features. Not generic.
+- target_customer: Be specific about size, industry, situation.`;
 
-interface Quote {
-  text: string;
-  url: string;
-  author: string;
-  score: number;
+interface ProductResult {
+  product_name: string;
+  tagline: string;
+  how_it_works: string[];
+  target_customer: string;
 }
 
-async function synthesizeCluster(apiKey: string, cluster: PainCluster, members: PainRecord[]): Promise<{
-  synthesis: SynthesisResponse | null;
-  quotes: Quote[];
-}> {
-  const quotes: Quote[] = members
-    .filter(m => m.problem_text && m.source_url)
-    .sort((a, b) => (b.source_score || 0) - (a.source_score || 0))
-    .slice(0, 10)
-    .map(m => ({ text: m.problem_text.slice(0, 300), url: m.source_url || '', author: m.source_author || 'anonymous', score: m.source_score || 0 }));
+/**
+ * Generate product concept from cluster quotes
+ */
+async function generateProduct(
+  apiKey: string, 
+  quotes: Quote[],
+  totalCount: number,
+  subreddits: string[]
+): Promise<ProductResult | null> {
+  // Format ALL quotes for the model
+  const quotesText = quotes
+    .map((q, i) => `${i + 1}. "${q.text}" — u/${q.author} (r/${q.subreddit})`)
+    .join('\n\n');
   
-  const memberSummaries = members.slice(0, 15).map((m, i) => 
-    `${i + 1}. "${m.problem_text}" (${m.persona || 'unknown'}, r/${m.subreddit})`
-  ).join('\n');
-  
-  const workarounds = members.filter(m => m.workaround_text).map(m => m.workaround_text).slice(0, 5);
-  
-  const context = `
-Cluster: ${members.length} pain points.
-Representative: ${cluster.centroid_text}
-
-Samples:
-${memberSummaries}
-
-Workarounds: ${workarounds.length > 0 ? workarounds.join('\n') : 'None mentioned'}
-Avg severity: ${cluster.avg_severity?.toFixed(1) || 'N/A'}, Avg W2P: ${cluster.avg_w2p?.toFixed(1) || 'N/A'}`;
+  const prompt = PRODUCT_PROMPT
+    .replace('{COUNT}', totalCount.toString())
+    .replace('{QUOTES}', quotesText)
+    .replace('{SUBREDDITS}', subreddits.join(', '));
 
   try {
-    const { content: responseText } = await callGPT5Nano(apiKey,
-      [{ role: 'system', content: SYNTHESIS_PROMPT }, { role: 'user', content: context }],
-      { temperature: 0.3, max_completion_tokens: 500, json_mode: true }
+    const { content } = await callGPT52(apiKey,
+      [{ role: 'user', content: prompt }],
+      { max_completion_tokens: 300, json_mode: true }
     );
-    return { synthesis: JSON.parse(responseText) as SynthesisResponse, quotes };
+    return JSON.parse(content) as ProductResult;
   } catch (error) {
-    console.error('Synthesis error:', error);
-    return { synthesis: null, quotes };
+    console.error('Product generation error:', error);
+    return null;
   }
 }
 
-async function updateClusterSynthesis(db: D1Database, clusterId: number, synthesis: SynthesisResponse, quotes: Quote[]): Promise<void> {
+/**
+ * Update cluster with product info
+ */
+async function updateClusterProduct(
+  db: D1Database, 
+  clusterId: number, 
+  product: ProductResult,
+  currentCount: number,
+  currentVersion: number
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const newVersion = currentVersion + 1;
+  
   await db.prepare(`
-    UPDATE pain_clusters SET brief_summary = ?, brief_quotes = ?, brief_personas = ?, brief_workarounds = ?, brief_open_questions = ?, synthesized_at = ?
+    UPDATE pain_clusters SET 
+      product_name = ?,
+      tagline = ?,
+      how_it_works = ?,
+      target_customer = ?,
+      last_synth_count = ?,
+      version = ?,
+      synthesized_at = ?
     WHERE id = ?
-  `).bind(synthesis.summary, JSON.stringify(quotes), JSON.stringify(synthesis.personas),
-    JSON.stringify(synthesis.common_workarounds), JSON.stringify(synthesis.open_questions),
-    Math.floor(Date.now() / 1000), clusterId).run();
+  `).bind(
+    product.product_name,
+    product.tagline,
+    JSON.stringify(product.how_it_works),
+    product.target_customer,
+    currentCount,
+    newVersion,
+    now,
+    clusterId
+  ).run();
 }
 
 export async function runSynthesis(env: Env): Promise<{ synthesized: number }> {
   const db = env.DB;
   let synthesized = 0;
   
+  // Get clusters that need synthesis (10% growth or never synthesized)
   const clusters = await getClustersNeedingSynthesis(db, BATCH_SIZE);
+  
+  console.log(`Synthesizing ${clusters.length} clusters...`);
   
   for (const cluster of clusters) {
     if (!cluster.id) continue;
-    const members = await getClusterMembers(db, cluster.id);
-    if (members.length === 0) continue;
     
-    const { synthesis, quotes } = await synthesizeCluster(env.OPENAI_API_KEY, cluster, members);
-    if (synthesis) {
-      await updateClusterSynthesis(db, cluster.id, synthesis, quotes);
+    const members = await getClusterMembers(db, cluster.id);
+    if (members.length < 1) {
+      console.log(`  Skipping cluster #${cluster.id}: only ${members.length} members`);
+      continue;
+    }
+    
+    console.log(`  Synthesizing cluster #${cluster.id} (${members.length} quotes, v${cluster.version})...`);
+    
+    // Build quotes array for ALL members
+    const quotes: Quote[] = members.map(m => ({
+      text: (m.raw_quote || '').slice(0, 400),
+      author: m.author || 'anonymous',
+      subreddit: m.subreddit
+    }));
+    
+    // Get subreddits
+    const subreddits = [...new Set(members.map(m => m.subreddit))];
+    
+    // Generate product with GPT-5.2
+    const product = await generateProduct(
+      env.OPENAI_API_KEY,
+      quotes,
+      members.length,
+      subreddits
+    );
+    
+    if (product) {
+      await updateClusterProduct(
+        db, 
+        cluster.id, 
+        product, 
+        members.length,
+        cluster.version || 0
+      );
+      console.log(`    ✓ ${product.product_name}: "${product.tagline}" (v${(cluster.version || 0) + 1})`);
       synthesized++;
     }
   }
+  
+  console.log(`\n=== Synthesis Complete ===`);
+  console.log(`Synthesized: ${synthesized} product concepts`);
   
   return { synthesized };
 }

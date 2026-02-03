@@ -1,36 +1,27 @@
-import { Opportunity, OpportunityDetail, PainRecord, Stats } from './types';
+// v5 API client
 
-// @ts-ignore
-const API_BASE = typeof import.meta !== 'undefined' && import.meta.env?.PROD ? '' : '';
+const API_BASE = 'https://ideas.koda-software.com';
 
-export async function fetchOpportunities(params?: {
-  limit?: number;
-  minScore?: number;
-  auOnly?: boolean;
-}): Promise<Opportunity[]> {
-  const searchParams = new URLSearchParams();
-  if (params?.limit) searchParams.set('limit', params.limit.toString());
-  if (params?.minScore) searchParams.set('minScore', params.minScore.toString());
-  if (params?.auOnly) searchParams.set('auOnly', 'true');
-  
-  const url = `${API_BASE}/api/opportunities?${searchParams}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error('Failed to fetch opportunities');
-  const data = await response.json();
-  return data.opportunities || [];
+export async function fetchOpportunities(limit: number = 20) {
+  const res = await fetch(`${API_BASE}/api/opportunities?limit=${limit}`);
+  if (!res.ok) throw new Error('Failed to fetch opportunities');
+  return res.json();
 }
 
-export async function fetchOpportunity(id: number): Promise<{
-  opportunity: OpportunityDetail;
-  members: PainRecord[];
-}> {
-  const response = await fetch(`${API_BASE}/api/opportunities/${id}`);
-  if (!response.ok) throw new Error('Failed to fetch opportunity');
-  return response.json();
+export async function fetchOpportunity(id: number) {
+  const res = await fetch(`${API_BASE}/api/opportunities/${id}`);
+  if (!res.ok) throw new Error('Failed to fetch opportunity');
+  return res.json();
 }
 
-export async function fetchStats(): Promise<Stats> {
-  const response = await fetch(`${API_BASE}/api/stats`);
-  if (!response.ok) throw new Error('Failed to fetch stats');
-  return response.json();
+export async function fetchStats() {
+  const res = await fetch(`${API_BASE}/api/stats`);
+  if (!res.ok) throw new Error('Failed to fetch stats');
+  return res.json();
+}
+
+export async function triggerPipeline(step: string) {
+  const res = await fetch(`${API_BASE}/api/trigger/${step}`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Failed to trigger ${step}`);
+  return res.json();
 }

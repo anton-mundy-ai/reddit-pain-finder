@@ -1,0 +1,22 @@
+{
+  "name": "reddit-pain-finder",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create reddit-pain-finder",
+    "db:init": "wrangler d1 execute reddit-pain-finder --file=./schema.sql",
+    "db:init:local": "wrangler d1 execute reddit-pain-finder --local --file=./schema.sql",
+    "frontend:build": "cd frontend && npm run build",
+    "frontend:install": "cd frontend && npm install",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240117.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0",
+    "wrangler": "^3.25.0"
+  }
+}

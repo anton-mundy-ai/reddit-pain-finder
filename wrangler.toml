@@ -1,0 +1,28 @@
+name = "reddit-pain-finder"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[triggers]
+crons = ["*/30 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "reddit-pain-finder"
+database_id = "ed404205-31e1-4d19-ba4e-994a0e269112"
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "pain-embeddings"
+
+[vars]
+ENVIRONMENT = "production"
+
+# Routes for custom domain
+[[routes]]
+pattern = "ideas.koda-software.com/*"
+zone_name = "koda-software.com"
+
+# Static assets for frontend
+[site]
+bucket = "./frontend/dist"

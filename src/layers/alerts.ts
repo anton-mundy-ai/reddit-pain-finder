@@ -92,7 +92,7 @@ export async function getAlerts(
   params.push(limit, offset);
   
   const result = await db.prepare(query).bind(...params).all();
-  return (result.results || []) as Alert[];
+  return (result.results || []) as unknown as Alert[];
 }
 
 /**

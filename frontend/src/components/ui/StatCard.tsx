@@ -83,12 +83,16 @@ export function StatCard({
       padding="none"
       className={`
         ${sizes.padding} ${styles.bg} ${styles.border}
+        transition-all duration-300 hover:border-dark-500
         ${className}
       `}
     >
       <div className="flex items-start justify-between">
         <div className="flex-1">
-          <div className={`font-bold ${sizes.value} ${styles.value} flex items-center gap-2`}>
+          <div 
+            className={`font-bold ${sizes.value} ${styles.value} flex items-center gap-2`}
+            style={{ animation: 'countUp 0.4s ease-out' }}
+          >
             {icon && <span className="opacity-80">{icon}</span>}
             {value}
           </div>
@@ -96,10 +100,13 @@ export function StatCard({
           {sublabel && <div className={`text-gray-500 mt-0.5 ${sizes.sublabel}`}>{sublabel}</div>}
         </div>
         {trend && (
-          <div className={`
-            flex items-center gap-1 text-sm font-medium
-            ${trend.positive !== false ? 'text-green-400' : 'text-red-400'}
-          `}>
+          <div 
+            className={`
+              flex items-center gap-1 text-sm font-medium
+              ${trend.positive !== false ? 'text-green-400' : 'text-red-400'}
+            `}
+            style={{ animation: 'slideInRight 0.3s ease-out 0.2s both' }}
+          >
             <span>{trend.positive !== false ? '↑' : '↓'}</span>
             <span>{Math.abs(trend.value)}%</span>
           </div>

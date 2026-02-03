@@ -101,13 +101,19 @@ export function LoadingState({
   className?: string;
 }) {
   return (
-    <div className={`empty-state ${className}`}>
-      <div className="relative mb-4">
-        <div className="w-16 h-16 border-4 border-dark-600 rounded-full"></div>
+    <div className={`flex flex-col items-center justify-center py-16 text-center ${className}`}>
+      <div className="relative mb-6">
+        {/* Outer ring with pulse */}
+        <div className="w-16 h-16 border-4 border-dark-600 rounded-full animate-pulse"></div>
+        {/* Spinning ring */}
         <div className="absolute inset-0 w-16 h-16 border-4 border-brand-500 rounded-full border-t-transparent animate-spin"></div>
+        {/* Inner glow */}
+        <div className="absolute inset-2 w-12 h-12 bg-brand-500/10 rounded-full animate-pulse"></div>
       </div>
-      <h3 className="empty-state-title">{title}</h3>
-      {description && <p className="empty-state-description">{description}</p>}
+      <h3 className="text-xl font-semibold text-gray-200 mb-2" style={{ animation: 'fadeIn 0.3s ease-out 0.2s both' }}>{title}</h3>
+      {description && (
+        <p className="text-gray-400 max-w-md" style={{ animation: 'fadeIn 0.3s ease-out 0.3s both' }}>{description}</p>
+      )}
     </div>
   );
 }

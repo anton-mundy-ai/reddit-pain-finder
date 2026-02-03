@@ -1,12 +1,27 @@
 // Layer 2: BINARY FILTER with Nano v6.1
 // Nano ONLY does: Is this a pain point? Yes/No
 // Quality tagging happens in separate layer
+// v24: Ingestion now handled by Docker container, this layer processes raw_comments
 
 import { Env, PainRecord } from '../types';
 import { callGPT5Nano } from '../utils/openai';
-import { getUnprocessedComments } from './ingestion';
 
 const BATCH_SIZE = 200;
+
+/**
+ * Get unprocessed comments from D1 (data populated by Docker scraper)
+ */
+async function getUnprocessedComments(db: D1Database, limit: number = 200): Promise<any[]> {
+  const result = await db.prepare(`
+    SELECT * FROM raw_comments 
+    WHERE is_pain_point IS NULL 
+    AND LENGTH(body) >= 30
+    ORDER BY score DESC 
+    LIMIT ?
+  `).bind(limit).all();
+  
+  return result.results || [];
+}
 
 // v6.1: SIMPLE binary classifier - nothing else
 const BINARY_FILTER_PROMPT = `Is this a PERSONAL problem, frustration, or unmet need?

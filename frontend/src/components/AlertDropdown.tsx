@@ -143,7 +143,7 @@ export default function AlertDropdown() {
         
         {/* Unread Badge */}
         {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[20px] h-5 px-1.5 text-xs font-bold text-white bg-red-500 rounded-full">
+          <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[20px] h-5 px-1.5 text-xs font-bold text-white bg-red-500 rounded-full animate-bounce-in">
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
         )}
@@ -151,7 +151,7 @@ export default function AlertDropdown() {
       
       {/* Dropdown */}
       {isOpen && (
-        <div className="absolute right-0 mt-2 w-96 bg-dark-800 border border-dark-600 rounded-xl shadow-2xl overflow-hidden z-50">
+        <div className="absolute right-0 mt-2 w-96 bg-dark-800 border border-dark-600 rounded-xl shadow-2xl overflow-hidden z-50 animate-dropdown origin-top-right">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-dark-600 bg-dark-750">
             <div className="flex items-center gap-2">
@@ -177,7 +177,10 @@ export default function AlertDropdown() {
           <div className="max-h-[400px] overflow-y-auto">
             {loading ? (
               <div className="flex items-center justify-center py-8">
-                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-accent-400"></div>
+                <div className="relative">
+                  <div className="w-8 h-8 border-3 border-dark-600 rounded-full"></div>
+                  <div className="absolute inset-0 w-8 h-8 border-3 border-brand-500 rounded-full border-t-transparent animate-spin"></div>
+                </div>
               </div>
             ) : alerts.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-8 text-gray-500">
@@ -192,9 +195,9 @@ export default function AlertDropdown() {
                   
                   const content = (
                     <div 
-                      className={`px-4 py-3 hover:bg-dark-700 transition-colors cursor-pointer ${
+                      className={`px-4 py-3 cursor-pointer transition-all duration-200 ${
                         isUnread ? 'bg-dark-750' : ''
-                      }`}
+                      } hover:bg-dark-700 active:bg-dark-650`}
                       onClick={() => {
                         if (isUnread) handleMarkRead(alert.id);
                         if (!link) setIsOpen(false);

@@ -95,7 +95,10 @@ export function TabsContent({ value, children, className = '' }: TabsContentProp
   if (context.activeTab !== value) return null;
   
   return (
-    <div className={`animate-fade-in ${className}`}>
+    <div 
+      className={`${className}`}
+      style={{ animation: 'fadeIn 0.3s ease-out' }}
+    >
       {children}
     </div>
   );

@@ -1,172 +1,190 @@
 /**
- * Layer 4: Clustering
- * Group similar pain points using LLM-based similarity
+ * Layer 4: Clustering v3
+ * Group similar pain points into opportunity clusters
+ * Uses GPT-5-nano for similarity checks
  */
 
-const SIMILARITY_THRESHOLD = 0.70;
+import { checkSimilarity } from '../utils/llm.js';
+
 const BATCH_SIZE = 5;
+const SIMILARITY_THRESHOLD = 60;
 
 export async function runClustering(env) {
-  const stats = { clustered: 0, newClusters: 0 };
+  const stats = { clustered: 0, newClusters: 0, existingClusters: 0 };
   
   // Get unclustered pain records
   const unclustered = await env.DB.prepare(`
-    SELECT id, problem_text, persona, subreddit
+    SELECT id, problem_text, persona, subreddit, source_author
     FROM pain_records
-    WHERE cluster_id IS NULL AND problem_text IS NOT NULL AND problem_text != ''
+    WHERE cluster_id IS NULL
+    ORDER BY extracted_at DESC
     LIMIT ?
   `).bind(BATCH_SIZE).all();
   
-  console.log(`Found ${unclustered.results.length} unclustered records`);
+  console.log(`[Clustering] Found ${unclustered.results.length} unclustered records`);
+  
+  // Get existing cluster centroids
+  const clusters = await env.DB.prepare(`
+    SELECT id, centroid_text, product_name, member_count
+    FROM pain_clusters
+    ORDER BY member_count DESC
+    LIMIT 50
+  `).all();
   
   for (const record of unclustered.results) {
-    try {
-      // Generate embedding for the problem statement
-      const embedding = await getEmbedding(env, record.problem_text);
+    let bestMatch = null;
+    let bestScore = 0;
+    
+    // Compare with existing clusters
+    for (const cluster of clusters.results) {
+      if (!cluster.centroid_text) continue;
       
-      if (!embedding) {
-        console.error('Failed to generate embedding for record:', record.id);
-        continue;
-      }
-      
-      // Find best matching cluster by comparing with existing cluster centroids
-      let bestClusterId = null;
-      let bestScore = 0;
-      
-      // Get existing clusters with their representative pain records
-      const existingClusters = await env.DB.prepare(`
-        SELECT c.id as cluster_id, c.centroid_text
-        FROM pain_clusters c
-        WHERE c.centroid_text IS NOT NULL
-        LIMIT 50
-      `).all();
-      
-      for (const cluster of existingClusters.results) {
-        if (!cluster.centroid_text) continue;
-        const clusterEmbedding = await getEmbedding(env, cluster.centroid_text);
-        if (clusterEmbedding) {
-          const similarity = cosineSimilarity(embedding, clusterEmbedding);
-          if (similarity >= SIMILARITY_THRESHOLD && similarity > bestScore) {
-            bestScore = similarity;
-            bestClusterId = cluster.cluster_id;
-          }
-        }
-      }
-      
-      let clusterId;
-      const now = Math.floor(Date.now() / 1000);
-      
-      if (bestClusterId) {
-        clusterId = bestClusterId;
-        console.log(`Record ${record.id} matched existing cluster ${clusterId}`);
-      } else {
-        // Create new cluster with centroid_text from first record
-        const result = await env.DB.prepare(`
-          INSERT INTO pain_clusters (centroid_text, member_count, created_at, updated_at)
-          VALUES (?, 1, ?, ?)
-        `).bind(record.problem_text, now, now).run();
+      try {
+        const similarity = await checkSimilarity(env, record.problem_text, cluster.centroid_text);
         
-        clusterId = result.meta.last_row_id;
-        stats.newClusters++;
-        console.log(`Created new cluster ${clusterId} for record ${record.id}`);
+        if (similarity > SIMILARITY_THRESHOLD && similarity > bestScore) {
+          bestScore = similarity;
+          bestMatch = cluster;
+        }
+      } catch (e) {
+        console.log(`[Clustering] Similarity check failed:`, e.message);
       }
-      
-      // Update pain record with cluster
+    }
+    
+    if (bestMatch) {
+      // Add to existing cluster
       await env.DB.prepare(`
         UPDATE pain_records SET cluster_id = ? WHERE id = ?
-      `).bind(clusterId, record.id).run();
+      `).bind(bestMatch.id, record.id).run();
       
-      // Add to cluster_members
       await env.DB.prepare(`
-        INSERT OR IGNORE INTO cluster_members (cluster_id, pain_record_id, similarity_score, added_at)
-        VALUES (?, ?, ?, ?)
-      `).bind(clusterId, record.id, bestScore || 1.0, now).run();
+        INSERT INTO cluster_members (cluster_id, pain_record_id, similarity_score, added_at)
+        VALUES (?, ?, ?, unixepoch())
+      `).bind(bestMatch.id, record.id, bestScore).run();
       
       // Update cluster stats
-      const memberStats = await env.DB.prepare(`
-        SELECT 
-          COUNT(*) as member_count,
-          COUNT(DISTINCT pr.source_author) as unique_authors,
-          COUNT(DISTINCT pr.subreddit) as subreddit_count,
-          AVG(pr.severity_score) as avg_severity
-        FROM cluster_members cm
-        JOIN pain_records pr ON pr.id = cm.pain_record_id
-        WHERE cm.cluster_id = ?
-      `).bind(clusterId).first();
-      
-      await env.DB.prepare(`
-        UPDATE pain_clusters 
-        SET member_count = ?, unique_authors = ?, subreddit_count = ?, 
-            avg_severity = ?, updated_at = ?
-        WHERE id = ?
-      `).bind(
-        memberStats?.member_count || 1,
-        memberStats?.unique_authors || 1,
-        memberStats?.subreddit_count || 1,
-        memberStats?.avg_severity || 0,
-        now,
-        clusterId
-      ).run();
+      await updateClusterStats(env, bestMatch.id);
       
       stats.clustered++;
-    } catch (error) {
-      console.error('Clustering error for record', record.id, ':', error.message);
+      stats.existingClusters++;
+      console.log(`[Clustering] Added record ${record.id} to cluster ${bestMatch.id} (score: ${bestScore})`);
+    } else {
+      // Create new cluster
+      const result = await env.DB.prepare(`
+        INSERT INTO pain_clusters (centroid_text, member_count, created_at, updated_at)
+        VALUES (?, 1, unixepoch(), unixepoch())
+        RETURNING id
+      `).bind(record.problem_text).first();
+      
+      if (result?.id) {
+        await env.DB.prepare(`
+          UPDATE pain_records SET cluster_id = ? WHERE id = ?
+        `).bind(result.id, record.id).run();
+        
+        await env.DB.prepare(`
+          INSERT INTO cluster_members (cluster_id, pain_record_id, similarity_score, added_at)
+          VALUES (?, ?, 100, unixepoch())
+        `).bind(result.id, record.id).run();
+        
+        stats.clustered++;
+        stats.newClusters++;
+        console.log(`[Clustering] Created new cluster ${result.id} for record ${record.id}`);
+        
+        // Add to local list for further comparisons
+        clusters.results.push({
+          id: result.id,
+          centroid_text: record.problem_text,
+          member_count: 1,
+        });
+      }
     }
   }
   
-  console.log('Clustering stats:', stats);
+  console.log(`[Clustering] Clustered: ${stats.clustered}, New: ${stats.newClusters}, Existing: ${stats.existingClusters}`);
   return stats;
 }
 
-async function getEmbedding(env, text) {
-  const apiKey = env.OPENAI_API_KEY;
+async function updateClusterStats(env, clusterId) {
+  // Get member stats
+  const memberStats = await env.DB.prepare(`
+    SELECT 
+      COUNT(*) as member_count,
+      COUNT(DISTINCT source_author) as unique_authors,
+      COUNT(DISTINCT subreddit) as subreddit_count,
+      AVG(severity_score) as avg_severity,
+      AVG(w2p_score) as avg_w2p
+    FROM pain_records
+    WHERE cluster_id = ?
+  `).bind(clusterId).first();
   
-  if (!apiKey) {
-    console.error('OPENAI_API_KEY not configured');
-    return null;
-  }
-  
-  try {
-    const response = await fetch('https://api.openai.com/v1/embeddings', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'text-embedding-3-small',
-        input: text.slice(0, 8000),
-      }),
-    });
-    
-    if (!response.ok) {
-      const error = await response.text();
-      console.error('Embedding API error:', error);
-      return null;
-    }
-    
-    const data = await response.json();
-    return data.data[0].embedding;
-  } catch (error) {
-    console.error('Embedding error:', error);
-    return null;
-  }
+  await env.DB.prepare(`
+    UPDATE pain_clusters SET
+      member_count = ?,
+      unique_authors = ?,
+      subreddit_count = ?,
+      avg_severity = ?,
+      avg_w2p = ?,
+      updated_at = unixepoch()
+    WHERE id = ?
+  `).bind(
+    memberStats?.member_count || 0,
+    memberStats?.unique_authors || 0,
+    memberStats?.subreddit_count || 0,
+    memberStats?.avg_severity,
+    memberStats?.avg_w2p,
+    clusterId
+  ).run();
 }
 
-function cosineSimilarity(vecA, vecB) {
-  if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
+/**
+ * Merge similar clusters (cleanup task)
+ */
+export async function mergeSimilarClusters(env) {
+  const stats = { merged: 0 };
   
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
+  const smallClusters = await env.DB.prepare(`
+    SELECT id, centroid_text FROM pain_clusters
+    WHERE member_count = 1
+    ORDER BY created_at DESC
+    LIMIT 10
+  `).all();
   
-  for (let i = 0; i < vecA.length; i++) {
-    dotProduct += vecA[i] * vecB[i];
-    normA += vecA[i] * vecA[i];
-    normB += vecB[i] * vecB[i];
+  const largeClusters = await env.DB.prepare(`
+    SELECT id, centroid_text, member_count FROM pain_clusters
+    WHERE member_count >= 2
+    ORDER BY member_count DESC
+    LIMIT 20
+  `).all();
+  
+  for (const small of smallClusters.results) {
+    for (const large of largeClusters.results) {
+      try {
+        const similarity = await checkSimilarity(env, small.centroid_text, large.centroid_text);
+        
+        if (similarity >= 70) {
+          // Merge small into large
+          await env.DB.prepare(`
+            UPDATE pain_records SET cluster_id = ? WHERE cluster_id = ?
+          `).bind(large.id, small.id).run();
+          
+          await env.DB.prepare(`
+            UPDATE cluster_members SET cluster_id = ? WHERE cluster_id = ?
+          `).bind(large.id, small.id).run();
+          
+          await env.DB.prepare(`
+            DELETE FROM pain_clusters WHERE id = ?
+          `).bind(small.id).run();
+          
+          await updateClusterStats(env, large.id);
+          stats.merged++;
+          console.log(`[Clustering] Merged cluster ${small.id} into ${large.id}`);
+          break;
+        }
+      } catch (e) {
+        // Ignore similarity failures
+      }
+    }
   }
   
-  if (normA === 0 || normB === 0) return 0;
-  
-  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  return stats;
 }

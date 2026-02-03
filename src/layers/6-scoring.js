@@ -1,6 +1,7 @@
 /**
- * Layer 6: Scoring
+ * Layer 6: Scoring v3
  * Multi-factor ranking of opportunity clusters
+ * Uses GPT-5.2 for quality scoring
  */
 
 import { scoreCluster } from '../utils/llm.js';
@@ -9,23 +10,23 @@ import { hasAustralianContext } from '../utils/reddit.js';
 const BATCH_SIZE = 2;
 
 export async function runScoring(env) {
-  const stats = { scored: 0 };
+  const stats = { scored: 0, skipped: 0 };
   
   // Get clusters that need scoring
-  const clustersNeedingScoring = await env.DB.prepare(`
-    SELECT c.id, c.member_count, b.summary, b.personas, b.common_workarounds
-    FROM pain_clusters c
-    JOIN opportunity_briefs b ON b.cluster_id = c.id
-    LEFT JOIN cluster_scores s ON s.cluster_id = c.id
-    WHERE c.is_active = 1
-      AND (s.id IS NULL OR s.calculated_at < b.generated_at)
-    ORDER BY c.member_count DESC
+  const pendingClusters = await env.DB.prepare(`
+    SELECT id, member_count, product_name, brief_summary, brief_personas, brief_workarounds, synthesized_at, scored_at
+    FROM pain_clusters
+    WHERE brief_summary IS NOT NULL
+      AND (scored_at IS NULL OR scored_at < synthesized_at)
+    ORDER BY member_count DESC
     LIMIT ?
   `).bind(BATCH_SIZE).all();
   
-  for (const cluster of clustersNeedingScoring.results) {
+  console.log(`[Scoring] Found ${pendingClusters.results.length} clusters to score`);
+  
+  for (const cluster of pendingClusters.results) {
     try {
-      // Get pain records for this cluster
+      // Get pain records for context
       const records = await env.DB.prepare(`
         SELECT pr.*
         FROM pain_records pr
@@ -34,7 +35,11 @@ export async function runScoring(env) {
         LIMIT 20
       `).bind(cluster.id).all();
       
-      if (records.results.length === 0) continue;
+      if (records.results.length === 0) {
+        console.log(`[Scoring] Cluster ${cluster.id}: no records, skipping`);
+        stats.skipped++;
+        continue;
+      }
       
       // Calculate base metrics
       const uniqueAuthors = new Set(records.results.map(r => r.source_author).filter(Boolean)).size;
@@ -43,22 +48,26 @@ export async function runScoring(env) {
         hasAustralianContext((r.problem_text || '') + ' ' + (r.context_location || ''), r.subreddit)
       ).length;
       
-      // Adapt records for LLM (use problem_text as problem_statement)
+      // Build brief object
+      const brief = {
+        product_name: cluster.product_name,
+        summary: cluster.brief_summary,
+        personas: parseJSON(cluster.brief_personas),
+        workarounds: parseJSON(cluster.brief_workarounds),
+      };
+      
+      // Adapt records for LLM
       const adaptedRecords = records.results.map(r => ({
         ...r,
         problem_statement: r.problem_text,
       }));
       
-      // Get LLM-based scores
-      const brief = {
-        summary: cluster.summary,
-        common_personas: parseJSON(cluster.personas),
-        common_workarounds: parseJSON(cluster.common_workarounds),
-      };
+      console.log(`[Scoring] Cluster ${cluster.id}: getting LLM scores...`);
       
+      // Get LLM scores (GPT-5.2)
       const llmScores = await scoreCluster(env, brief, adaptedRecords);
       
-      // Calculate final scores
+      // Calculate final scores with boosters
       const frequencyScore = calculateFrequencyScore(
         records.results.length,
         uniqueAuthors,
@@ -69,114 +78,58 @@ export async function runScoring(env) {
       const severityScore = llmScores.severity?.score || 50;
       const economicScore = llmScores.economic_value?.score || 50;
       const solvabilityScore = llmScores.solvability?.score || 50;
-      const competitionScore = llmScores.competition?.score || 50;
+      const competitiveScore = llmScores.competition?.score || 50;
       
-      // AU fit - boost if Australian context found
+      // AU fit with boost for Australian content
       const auFitBase = llmScores.au_fit?.score || 50;
       const auFitScore = auRecords > 0 
         ? Math.min(100, auFitBase + (auRecords / records.results.length) * 30)
         : auFitBase;
       
       // Total score - weighted combination
-      const totalScore = calculateTotalScore({
-        frequency: frequencyScore,
-        severity: severityScore,
-        economic: economicScore,
-        solvability: solvabilityScore,
-        competition: competitionScore,
-        auFit: auFitScore,
-      });
+      const totalScore = Math.round(
+        frequencyScore * 0.15 +
+        severityScore * 0.25 +
+        economicScore * 0.20 +
+        solvabilityScore * 0.15 +
+        competitiveScore * 0.10 +
+        auFitScore * 0.15
+      );
       
-      // Upsert scores
-      const existing = await env.DB.prepare(`
-        SELECT id FROM cluster_scores WHERE cluster_id = ?
-      `).bind(cluster.id).first();
-      
-      if (existing) {
-        await env.DB.prepare(`
-          UPDATE cluster_scores SET
-            total_score = ?,
-            frequency_score = ?,
-            severity_score = ?,
-            economic_score = ?,
-            solvability_score = ?,
-            competition_score = ?,
-            au_fit_score = ?,
-            calculated_at = unixepoch()
-          WHERE cluster_id = ?
-        `).bind(
-          totalScore,
-          frequencyScore,
-          severityScore,
-          economicScore,
-          solvabilityScore,
-          competitionScore,
-          auFitScore,
-          cluster.id
-        ).run();
-      } else {
-        await env.DB.prepare(`
-          INSERT INTO cluster_scores (
-            cluster_id, total_score,
-            frequency_score, severity_score, economic_score,
-            solvability_score, competition_score, au_fit_score
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).bind(
-          cluster.id,
-          totalScore,
-          frequencyScore,
-          severityScore,
-          economicScore,
-          solvabilityScore,
-          competitionScore,
-          auFitScore
-        ).run();
-      }
+      // Store scores in cluster
+      await env.DB.prepare(`
+        UPDATE pain_clusters SET
+          frequency_score = ?,
+          severity_score = ?,
+          economic_score = ?,
+          solvability_score = ?,
+          competitive_score = ?,
+          au_fit_score = ?,
+          total_score = ?,
+          scored_at = unixepoch()
+        WHERE id = ?
+      `).bind(
+        frequencyScore,
+        severityScore,
+        economicScore,
+        solvabilityScore,
+        competitiveScore,
+        auFitScore,
+        totalScore,
+        cluster.id
+      ).run();
       
       stats.scored++;
+      console.log(`[Scoring] Cluster ${cluster.id} "${cluster.product_name}": total=${totalScore}`);
+      
     } catch (error) {
-      console.error('Scoring error for cluster', cluster.id, ':', error.message);
+      console.error(`[Scoring] Error cluster ${cluster.id}:`, error.message);
+      stats.skipped++;
     }
   }
   
+  console.log(`[Scoring] Scored: ${stats.scored}, Skipped: ${stats.skipped}`);
   return stats;
-}
-
-function calculateFrequencyScore(mentions, uniqueAuthors, uniqueSubreddits, llmScore) {
-  let score = llmScore;
-  
-  if (uniqueAuthors >= 5) score += 15;
-  else if (uniqueAuthors >= 3) score += 10;
-  else if (uniqueAuthors >= 2) score += 5;
-  
-  if (uniqueSubreddits >= 3) score += 15;
-  else if (uniqueSubreddits >= 2) score += 10;
-  
-  if (mentions >= 10) score += 10;
-  else if (mentions >= 5) score += 5;
-  
-  return Math.min(100, score);
-}
-
-function calculateTotalScore(scores) {
-  const weights = {
-    frequency: 0.15,
-    severity: 0.20,
-    economic: 0.25,
-    solvability: 0.15,
-    competition: 0.15,
-    auFit: 0.10,
-  };
-  
-  let total = 0;
-  total += scores.frequency * weights.frequency;
-  total += scores.severity * weights.severity;
-  total += scores.economic * weights.economic;
-  total += scores.solvability * weights.solvability;
-  total += scores.competition * weights.competition;
-  total += scores.auFit * weights.auFit;
-  
-  return Math.round(total);
 }
 
 function parseJSON(str) {
@@ -186,4 +139,36 @@ function parseJSON(str) {
   } catch {
     return [];
   }
+}
+
+function calculateFrequencyScore(recordCount, uniqueAuthors, uniqueSubreddits, llmScore) {
+  let score = llmScore;
+  
+  // Boost for multiple mentions
+  if (recordCount >= 3) score += 5;
+  if (recordCount >= 5) score += 5;
+  if (recordCount >= 10) score += 10;
+  if (recordCount >= 20) score += 10;
+  
+  // Boost for diverse sources
+  if (uniqueAuthors >= 2) score += 5;
+  if (uniqueAuthors >= 5) score += 5;
+  if (uniqueSubreddits >= 2) score += 5;
+  if (uniqueSubreddits >= 3) score += 5;
+  
+  return Math.min(100, Math.max(0, Math.round(score)));
+}
+
+/**
+ * Re-score a specific cluster (for back-validation updates)
+ */
+export async function rescoreCluster(env, clusterId) {
+  // Temporarily set scored_at to null to force re-scoring
+  await env.DB.prepare(`
+    UPDATE pain_clusters SET scored_at = NULL WHERE id = ?
+  `).bind(clusterId).run();
+  
+  // Run scoring for just this cluster
+  const result = await runScoring(env);
+  return result;
 }

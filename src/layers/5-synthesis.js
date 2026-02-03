@@ -1,20 +1,27 @@
 /**
- * Layer 5: Synthesis
- * Generate opportunity briefs for clusters
- * Adapted to existing database schema (briefs are stored in pain_clusters table)
+ * Layer 5: Synthesis v3
+ * Generate SNAPPY opportunity briefs for clusters
+ * Uses GPT-5.2 for quality output
+ * 
+ * CRITICAL: Output must be brief and punchy
+ * - Product names, not descriptions
+ * - 1-2 sentence summaries
+ * - Short persona/workaround lists
  */
 
 import { generateOpportunityBrief } from '../utils/llm.js';
 
 const BATCH_SIZE = 2;
-const MIN_CLUSTER_SIZE = 2;
+const MIN_CLUSTER_SIZE = 1;
 
 export async function runSynthesis(env) {
-  const stats = { synthesized: 0 };
+  const stats = { synthesized: 0, skipped: 0 };
   
-  // Get clusters that need synthesis (no brief or outdated)
-  const clustersNeedingSynthesis = await env.DB.prepare(`
-    SELECT id, member_count, updated_at, synthesized_at
+  console.log('[Synthesis] Starting...');
+  
+  // Get clusters needing synthesis
+  const pendingClusters = await env.DB.prepare(`
+    SELECT id, member_count, centroid_text, updated_at, synthesized_at
     FROM pain_clusters 
     WHERE member_count >= ?
       AND (synthesized_at IS NULL OR synthesized_at < updated_at)
@@ -22,11 +29,13 @@ export async function runSynthesis(env) {
     LIMIT ?
   `).bind(MIN_CLUSTER_SIZE, BATCH_SIZE).all();
   
-  for (const cluster of clustersNeedingSynthesis.results) {
+  console.log(`[Synthesis] Found ${pendingClusters.results.length} clusters to synthesize`);
+  
+  for (const cluster of pendingClusters.results) {
     try {
       // Get pain records for this cluster
       const records = await env.DB.prepare(`
-        SELECT pr.*
+        SELECT pr.*, cm.similarity_score
         FROM pain_records pr
         JOIN cluster_members cm ON cm.pain_record_id = pr.id
         WHERE cm.cluster_id = ?
@@ -34,29 +43,39 @@ export async function runSynthesis(env) {
         LIMIT 15
       `).bind(cluster.id).all();
       
-      if (records.results.length < MIN_CLUSTER_SIZE) continue;
+      if (records.results.length < MIN_CLUSTER_SIZE) {
+        console.log(`[Synthesis] Cluster ${cluster.id}: not enough records`);
+        stats.skipped++;
+        continue;
+      }
       
-      // Adapt records for the LLM
+      // Adapt records for LLM (map problem_text -> problem_statement)
       const adaptedRecords = records.results.map(r => ({
         ...r,
         problem_statement: r.problem_text,
       }));
       
-      // Generate brief using LLM
+      console.log(`[Synthesis] Cluster ${cluster.id}: generating brief from ${records.results.length} records`);
+      
+      // Generate SNAPPY brief using GPT-5.2
       const brief = await generateOpportunityBrief(env, adaptedRecords);
       
-      // Prepare top quotes
-      const topQuotes = records.results.slice(0, 10).map(r => ({
-        quote: r.problem_text?.slice(0, 300) || '',
+      // Prepare top quotes (brief format)
+      const topQuotes = records.results.slice(0, 8).map(r => ({
+        quote: (r.problem_text || '').slice(0, 200),
         url: r.source_url,
         author: r.source_author,
         subreddit: r.subreddit,
+        score: r.source_score,
       }));
       
-      // Update cluster with brief (using existing schema columns)
+      // Get unique subreddits
+      const subreddits = [...new Set(records.results.map(r => r.subreddit))];
+      
+      // Update cluster with synthesis results
       await env.DB.prepare(`
-        UPDATE pain_clusters 
-        SET 
+        UPDATE pain_clusters SET
+          product_name = ?,
           brief_summary = ?,
           brief_quotes = ?,
           brief_personas = ?,
@@ -64,52 +83,79 @@ export async function runSynthesis(env) {
           synthesized_at = unixepoch()
         WHERE id = ?
       `).bind(
+        brief.product_name || brief.suggested_name || 'Unnamed Opportunity',
         brief.summary,
         JSON.stringify(topQuotes),
-        JSON.stringify(brief.common_personas || []),
-        JSON.stringify(brief.common_workarounds || []),
+        JSON.stringify(brief.personas || brief.common_personas || []),
+        JSON.stringify(brief.workarounds || brief.common_workarounds || []),
         cluster.id
       ).run();
       
-      // Also try to update opportunity_briefs table if it exists
-      try {
-        const existing = await env.DB.prepare(`
-          SELECT id FROM opportunity_briefs WHERE cluster_id = ?
-        `).bind(cluster.id).first();
-        
-        if (existing) {
-          await env.DB.prepare(`
-            UPDATE opportunity_briefs 
-            SET summary = ?, top_quotes = ?, personas = ?, common_workarounds = ?, generated_at = unixepoch()
-            WHERE cluster_id = ?
-          `).bind(
-            brief.summary,
-            JSON.stringify(topQuotes),
-            JSON.stringify(brief.common_personas || []),
-            JSON.stringify(brief.common_workarounds || []),
-            cluster.id
-          ).run();
-        } else {
-          await env.DB.prepare(`
-            INSERT INTO opportunity_briefs (cluster_id, summary, top_quotes, personas, common_workarounds)
-            VALUES (?, ?, ?, ?, ?)
-          `).bind(
-            cluster.id,
-            brief.summary,
-            JSON.stringify(topQuotes),
-            JSON.stringify(brief.common_personas || []),
-            JSON.stringify(brief.common_workarounds || [])
-          ).run();
-        }
-      } catch (e) {
-        // opportunity_briefs table might not exist, that's okay
-      }
-      
       stats.synthesized++;
+      console.log(`[Synthesis] Cluster ${cluster.id}: "${brief.product_name}" - ${brief.summary?.slice(0, 80)}...`);
+      
     } catch (error) {
-      console.error('Synthesis error for cluster', cluster.id, ':', error.message);
+      console.error(`[Synthesis] Error cluster ${cluster.id}:`, error.message);
+      stats.skipped++;
     }
   }
   
+  console.log(`[Synthesis] Synthesized: ${stats.synthesized}, Skipped: ${stats.skipped}`);
   return stats;
+}
+
+/**
+ * Re-synthesize a specific cluster (for back-validation)
+ */
+export async function resynthesizeCluster(env, clusterId) {
+  const cluster = await env.DB.prepare(`
+    SELECT * FROM pain_clusters WHERE id = ?
+  `).bind(clusterId).first();
+  
+  if (!cluster) {
+    throw new Error('Cluster not found');
+  }
+  
+  const records = await env.DB.prepare(`
+    SELECT pr.*
+    FROM pain_records pr
+    JOIN cluster_members cm ON cm.pain_record_id = pr.id
+    WHERE cm.cluster_id = ?
+    ORDER BY cm.similarity_score DESC
+    LIMIT 20
+  `).bind(clusterId).all();
+  
+  const adaptedRecords = records.results.map(r => ({
+    ...r,
+    problem_statement: r.problem_text,
+  }));
+  
+  const brief = await generateOpportunityBrief(env, adaptedRecords);
+  
+  const topQuotes = records.results.slice(0, 10).map(r => ({
+    quote: (r.problem_text || '').slice(0, 200),
+    url: r.source_url,
+    author: r.source_author,
+    subreddit: r.subreddit,
+  }));
+  
+  await env.DB.prepare(`
+    UPDATE pain_clusters SET
+      product_name = ?,
+      brief_summary = ?,
+      brief_quotes = ?,
+      brief_personas = ?,
+      brief_workarounds = ?,
+      synthesized_at = unixepoch()
+    WHERE id = ?
+  `).bind(
+    brief.product_name || brief.suggested_name,
+    brief.summary,
+    JSON.stringify(topQuotes),
+    JSON.stringify(brief.personas || brief.common_personas || []),
+    JSON.stringify(brief.workarounds || brief.common_workarounds || []),
+    clusterId
+  ).run();
+  
+  return brief;
 }

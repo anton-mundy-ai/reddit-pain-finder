@@ -1,6 +1,7 @@
 // Layout component with professional header and navigation
 import { Link, useLocation } from 'react-router-dom';
 import { ReactNode, useState } from 'react';
+import AlertDropdown from './AlertDropdown';
 
 interface NavLink {
   path: string;
@@ -63,11 +64,14 @@ export default function Layout({ children }: { children: ReactNode }) {
             
             {/* Right side actions */}
             <div className="flex items-center gap-3">
+              {/* Alerts */}
+              <AlertDropdown />
+              
               {/* Version badge */}
               <div className="hidden sm:flex items-center gap-2">
                 <span className="badge badge-brand">
                   <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse-soft" />
-                  v17
+                  v16 🌏
                 </span>
               </div>
               

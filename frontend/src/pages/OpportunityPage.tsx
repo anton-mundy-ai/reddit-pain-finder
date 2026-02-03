@@ -1,10 +1,16 @@
-// v13: Opportunity detail page with MVP Features + Early Adopters Outreach + Landing Page Generator
+// v17: Opportunity detail page with professional design
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { fetchOpportunity, fetchOpportunityFeatures, fetchOutreachList, updateOutreachStatus, getOutreachExportUrl, fetchOpportunityLanding, generateOpportunityLanding, MVPFeature, OutreachContact, OutreachStats, OutreachTemplate, OutreachStatus, LandingPage } from '../api';
+import { fetchOpportunity, fetchOpportunityFeatures, MVPFeature } from '../api';
 import { OpportunityDetail, Quote } from '../types';
-
-type TabType = 'overview' | 'features' | 'landing' | 'outreach' | 'quotes';
+import { 
+  Card, CardHeader, CardTitle, CardFooter,
+  Badge, SeverityBadge, MarketTierBadge,
+  StatCard, StatGrid,
+  Button, ButtonLink,
+  EmptyState, LoadingState,
+  Skeleton, SkeletonText
+} from '../components/ui';
 
 export default function OpportunityPage() {
   const { id } = useParams();
@@ -14,21 +20,10 @@ export default function OpportunityPage() {
     nice_to_have: MVPFeature[];
     differentiator: MVPFeature[];
   } | null>(null);
-  const [outreachData, setOutreachData] = useState<{
-    contacts: OutreachContact[];
-    stats: OutreachStats;
-    templates: OutreachTemplate[];
-  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [showAllQuotes, setShowAllQuotes] = useState(false);
   const [expandedFeature, setExpandedFeature] = useState<number | null>(null);
-  const [expandedTemplate, setExpandedTemplate] = useState<number | null>(null);
-  const [statusUpdating, setStatusUpdating] = useState<number | null>(null);
-  const [landing, setLanding] = useState<LandingPage | null>(null);
-  const [generatingLanding, setGeneratingLanding] = useState(false);
-  const [copiedField, setCopiedField] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -51,99 +46,39 @@ export default function OpportunityPage() {
     }
     load();
   }, [id]);
-  
-  // Load outreach data when tab is selected
-  useEffect(() => {
-    async function loadOutreach() {
-      if (activeTab !== 'outreach' || !id || outreachData) return;
-      try {
-        const data = await fetchOutreachList(parseInt(id));
-        setOutreachData(data);
-      } catch (err) {
-        console.error('Failed to load outreach data:', err);
-      }
-    }
-    loadOutreach();
-  }, [activeTab, id, outreachData]);
-  
-  // Load landing page data when tab is selected
-  useEffect(() => {
-    async function loadLanding() {
-      if (activeTab !== 'landing' || !id || landing) return;
-      try {
-        const data = await fetchOpportunityLanding(parseInt(id));
-        if (data?.landing) {
-          setLanding(data.landing);
-        }
-      } catch (err) {
-        console.error('Failed to load landing page:', err);
-      }
-    }
-    loadLanding();
-  }, [activeTab, id, landing]);
-  
-  const handleGenerateLanding = async () => {
-    if (!id) return;
-    setGeneratingLanding(true);
-    try {
-      const result = await generateOpportunityLanding(parseInt(id));
-      if (result.landing) {
-        setLanding(result.landing);
-      }
-    } catch (err) {
-      console.error('Failed to generate landing:', err);
-    } finally {
-      setGeneratingLanding(false);
-    }
-  };
-  
-  const copyToClipboard = async (text: string, field: string) => {
-    await navigator.clipboard.writeText(text);
-    setCopiedField(field);
-    setTimeout(() => setCopiedField(null), 2000);
-  };
-  
-  async function handleStatusUpdate(contactId: number, newStatus: OutreachStatus) {
-    if (!outreachData) return;
-    setStatusUpdating(contactId);
-    try {
-      await updateOutreachStatus(contactId, newStatus);
-      // Update local state
-      setOutreachData({
-        ...outreachData,
-        contacts: outreachData.contacts.map(c => 
-          c.id === contactId ? { ...c, outreach_status: newStatus } : c
-        ),
-        stats: {
-          ...outreachData.stats,
-          pending: newStatus === 'pending' ? outreachData.stats.pending + 1 : outreachData.stats.pending - (outreachData.contacts.find(c => c.id === contactId)?.outreach_status === 'pending' ? 1 : 0),
-          contacted: newStatus === 'contacted' ? outreachData.stats.contacted + 1 : outreachData.stats.contacted,
-          responded: newStatus === 'responded' ? outreachData.stats.responded + 1 : outreachData.stats.responded
-        }
-      });
-    } catch (err) {
-      console.error('Failed to update status:', err);
-    } finally {
-      setStatusUpdating(null);
-    }
-  }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="animate-spin rounded-full h-12 w-12 border-4 border-purple-500 border-t-transparent"></div>
+      <div className="max-w-4xl mx-auto space-y-6">
+        <Skeleton className="h-6 w-32" />
+        <Card padding="lg" className="space-y-4">
+          <div className="flex items-start justify-between">
+            <div className="space-y-2">
+              <Skeleton className="h-10 w-64" />
+              <Skeleton className="h-6 w-96" />
+            </div>
+            <Skeleton className="h-16 w-20" />
+          </div>
+          <div className="grid grid-cols-4 gap-4 pt-4 border-t border-dark-600">
+            {[1,2,3,4].map(i => <Skeleton key={i} className="h-16" />)}
+          </div>
+        </Card>
+        <div className="grid md:grid-cols-2 gap-6">
+          <Card padding="lg"><SkeletonText lines={4} /></Card>
+          <Card padding="lg"><SkeletonText lines={4} /></Card>
+        </div>
       </div>
     );
   }
 
   if (error || !opportunity) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
-        <p className="text-red-600">{error || 'Opportunity not found'}</p>
-        <Link to="/" className="text-purple-600 hover:underline mt-2 inline-block">
-          ← Back to list
-        </Link>
-      </div>
+      <EmptyState
+        icon="😕"
+        title="Opportunity not found"
+        description={error || "We couldn't find the opportunity you're looking for."}
+        action={{ label: '← Back to list', href: '/' }}
+      />
     );
   }
 
@@ -161,11 +96,11 @@ export default function OpportunityPage() {
     unique_authors,
     total_upvotes,
     total_score,
-    severity_breakdown
+    severity_breakdown,
+    market
   } = opportunity;
 
   const displayQuotes = showAllQuotes ? all_quotes : all_quotes.slice(0, 5);
-  
   const hnQuotes = all_quotes.filter(q => q.subreddit === 'hackernews').length;
   const redditQuotes = all_quotes.length - hnQuotes;
   
@@ -173,211 +108,212 @@ export default function OpportunityPage() {
     ? features.must_have.length + features.nice_to_have.length + features.differentiator.length 
     : 0;
 
-  const getSeverityColor = (severity: string) => {
-    switch (severity) {
-      case 'critical': return 'bg-red-100 text-red-800 border-red-200';
-      case 'high': return 'bg-orange-100 text-orange-800 border-orange-200';
-      case 'medium': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
-      case 'low': return 'bg-green-100 text-green-800 border-green-200';
-      default: return 'bg-gray-100 text-gray-800 border-gray-200';
-    }
-  };
-  
-  const getFeatureTypeBadge = (type: string) => {
-    switch (type) {
-      case 'must_have': return { emoji: '🔴', label: 'Must-have', color: 'bg-red-100 text-red-800 border-red-200' };
-      case 'nice_to_have': return { emoji: '🟡', label: 'Nice-to-have', color: 'bg-yellow-100 text-yellow-800 border-yellow-200' };
-      case 'differentiator': return { emoji: '🔵', label: 'Differentiator', color: 'bg-blue-100 text-blue-800 border-blue-200' };
-      default: return { emoji: '⚪', label: type, color: 'bg-gray-100 text-gray-800 border-gray-200' };
-    }
-  };
-
   return (
-    <div className="max-w-4xl mx-auto space-y-8">
-      <Link to="/" className="text-purple-600 hover:underline inline-flex items-center gap-1">
-        ← Back to all opportunities
+    <div className="max-w-4xl mx-auto space-y-6">
+      {/* Back Link */}
+      <Link 
+        to="/" 
+        className="inline-flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm group"
+      >
+        <svg className="w-4 h-4 transition-transform group-hover:-translate-x-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+        </svg>
+        Back to all opportunities
       </Link>
 
-      {/* Header */}
-      <div className="bg-white rounded-xl shadow-lg p-8 border border-gray-100">
-        <div className="flex items-start justify-between mb-4">
-          <div>
-            <div className="flex items-center gap-3 mb-2">
-              <h1 className="text-3xl font-bold text-gray-900">{product_name}</h1>
-              <span className="px-3 py-1 text-sm font-semibold bg-purple-100 text-purple-700 rounded-full">
-                v{version}
-              </span>
-            </div>
-            <p className="text-xl text-gray-600">{tagline}</p>
-            
-            {/* Topic badge */}
-            {topic && (
-              <div className="mt-3">
-                <span className="px-3 py-1 text-sm bg-purple-50 text-purple-700 rounded-full capitalize">
-                  Topic: {topic.replace(/_/g, ' ')}
-                </span>
-              </div>
-            )}
-            
-            {/* Personas */}
-            {personas && personas.length > 0 && (
-              <div className="flex gap-2 mt-3">
-                {personas.map(p => (
-                  <span key={p} className="px-2.5 py-0.5 text-sm bg-blue-50 text-blue-700 rounded-full capitalize">
-                    {p.replace(/_/g, ' ')}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-          <div className="text-right">
-            <div className="text-4xl font-bold text-purple-600">{total_score}</div>
-            <div className="text-sm text-gray-500">Score</div>
-          </div>
-        </div>
-
-        {/* Stats */}
-        <div className="grid grid-cols-4 gap-4 mt-6 pt-6 border-t border-gray-100">
-          <div>
-            <div className="text-2xl font-bold text-gray-900">👥 {social_proof_count}</div>
-            <div className="text-sm text-gray-500">Total mentions</div>
-          </div>
-          <div>
-            <div className="text-2xl font-bold text-gray-900">{unique_authors}</div>
-            <div className="text-sm text-gray-500">Unique authors</div>
-          </div>
-          <div>
-            <div className="text-2xl font-bold text-gray-900">{subreddits.length}</div>
-            <div className="text-sm text-gray-500">Communities</div>
-          </div>
-          <div>
-            <div className="text-2xl font-bold text-gray-900">↑ {total_upvotes}</div>
-            <div className="text-sm text-gray-500">Total upvotes</div>
-          </div>
-        </div>
+      {/* Header Card */}
+      <Card padding="lg" className="relative overflow-hidden">
+        {/* Background gradient */}
+        <div className="absolute inset-0 bg-gradient-to-br from-brand-500/5 via-transparent to-purple-500/5" />
         
-        {/* Severity breakdown */}
-        {severity_breakdown && Object.keys(severity_breakdown).length > 0 && (
-          <div className="mt-4 pt-4 border-t border-gray-100">
-            <div className="text-sm font-semibold text-gray-700 mb-2">Severity Breakdown</div>
-            <div className="flex gap-3">
-              {severity_breakdown.critical > 0 && (
-                <span className="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm">
-                  🔴 Critical: {severity_breakdown.critical}
-                </span>
-              )}
-              {severity_breakdown.high > 0 && (
-                <span className="px-3 py-1 bg-orange-100 text-orange-800 rounded-full text-sm">
-                  🟠 High: {severity_breakdown.high}
-                </span>
-              )}
-              {severity_breakdown.medium > 0 && (
-                <span className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm">
-                  🟡 Medium: {severity_breakdown.medium}
-                </span>
-              )}
-              {severity_breakdown.low > 0 && (
-                <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm">
-                  🟢 Low: {severity_breakdown.low}
-                </span>
-              )}
+        <div className="relative">
+          <div className="flex flex-col sm:flex-row items-start justify-between gap-4 mb-6">
+            <div>
+              <div className="flex flex-wrap items-center gap-3 mb-2">
+                <h1 className="text-2xl sm:text-3xl font-bold text-white">{product_name}</h1>
+                <Badge variant="brand" size="lg">v{version}</Badge>
+              </div>
+              <p className="text-lg text-gray-400">{tagline}</p>
+              
+              {/* Topic & Personas */}
+              <div className="flex flex-wrap gap-2 mt-4">
+                {topic && (
+                  <Badge variant="purple" size="md">
+                    Topic: {topic.replace(/_/g, ' ')}
+                  </Badge>
+                )}
+                {personas && personas.map(p => (
+                  <Badge key={p} variant="blue" size="md">
+                    {p.replace(/_/g, ' ')}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+            
+            {/* Score */}
+            <div className="text-center p-4 bg-dark-700/50 rounded-xl border border-dark-600">
+              <div className="text-4xl font-bold text-brand-400">{total_score}</div>
+              <div className="text-sm text-gray-500">Score</div>
             </div>
           </div>
-        )}
-      </div>
 
-      {/* MVP Features Section - NEW in v12 */}
-      {features && totalFeatures > 0 && (
-        <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
-          <h2 className="text-lg font-bold text-gray-900 mb-4">
-            🎯 MVP Feature Requirements ({totalFeatures})
-          </h2>
+          {/* Stats Row */}
+          <StatGrid cols={4} className="border-t border-dark-600 pt-6">
+            <StatCard 
+              icon="👥"
+              value={social_proof_count.toString()} 
+              label="Total mentions"
+              size="sm"
+            />
+            <StatCard 
+              icon="✍️"
+              value={unique_authors.toString()} 
+              label="Unique authors"
+              size="sm"
+            />
+            <StatCard 
+              icon="🌐"
+              value={subreddits.length.toString()} 
+              label="Communities"
+              size="sm"
+            />
+            <StatCard 
+              icon="↑"
+              value={total_upvotes.toLocaleString()} 
+              label="Total upvotes"
+              size="sm"
+            />
+          </StatGrid>
           
-          {/* Must-have features */}
-          {features.must_have.length > 0 && (
-            <div className="mb-6">
-              <h3 className="text-md font-semibold text-red-700 mb-3 flex items-center gap-2">
-                🔴 Must-have ({features.must_have.length})
-                <span className="text-xs font-normal text-gray-500">Core features - build these first</span>
-              </h3>
-              <div className="space-y-3">
-                {features.must_have.map(feature => (
-                  <FeatureCard 
-                    key={feature.id} 
-                    feature={feature} 
-                    expanded={expandedFeature === feature.id}
-                    onToggle={() => setExpandedFeature(expandedFeature === feature.id ? null : feature.id)}
-                  />
-                ))}
+          {/* Severity Breakdown */}
+          {severity_breakdown && Object.keys(severity_breakdown).length > 0 && (
+            <div className="mt-6 pt-6 border-t border-dark-600">
+              <h4 className="text-sm font-semibold text-gray-300 mb-3">Severity Breakdown</h4>
+              <div className="flex flex-wrap gap-2">
+                {severity_breakdown.critical > 0 && (
+                  <SeverityBadge severity="critical" />
+                )}
+                {severity_breakdown.high > 0 && (
+                  <SeverityBadge severity="high" />
+                )}
+                {severity_breakdown.medium > 0 && (
+                  <SeverityBadge severity="medium" />
+                )}
+                {severity_breakdown.low > 0 && (
+                  <SeverityBadge severity="low" />
+                )}
               </div>
             </div>
           )}
           
-          {/* Nice-to-have features */}
-          {features.nice_to_have.length > 0 && (
-            <div className="mb-6">
-              <h3 className="text-md font-semibold text-yellow-700 mb-3 flex items-center gap-2">
-                🟡 Nice-to-have ({features.nice_to_have.length})
-                <span className="text-xs font-normal text-gray-500">Add after launch</span>
-              </h3>
-              <div className="space-y-3">
-                {features.nice_to_have.map(feature => (
-                  <FeatureCard 
-                    key={feature.id} 
-                    feature={feature}
-                    expanded={expandedFeature === feature.id}
-                    onToggle={() => setExpandedFeature(expandedFeature === feature.id ? null : feature.id)}
-                  />
-                ))}
+          {/* Market Size */}
+          {market && (
+            <div className="mt-6 pt-6 border-t border-dark-600">
+              <h4 className="text-sm font-semibold text-gray-300 mb-3">💰 Market Size Estimate</h4>
+              <div className="grid grid-cols-3 gap-4 p-4 bg-gradient-to-r from-brand-500/10 to-purple-500/10 rounded-xl border border-brand-500/20">
+                <div className="text-center">
+                  <div className="text-xs text-gray-500 mb-1">TAM</div>
+                  <MarketTierBadge tier={market.tam_tier} size="lg" />
+                </div>
+                <div className="text-center">
+                  <div className="text-xs text-gray-500 mb-1">SAM</div>
+                  <Badge variant="gray" size="lg">{market.sam_tier}</Badge>
+                </div>
+                <div className="text-center">
+                  <div className="text-xs text-gray-500 mb-1">SOM</div>
+                  <Badge variant="green" size="lg">{market.som_tier}</Badge>
+                </div>
               </div>
-            </div>
-          )}
-          
-          {/* Differentiator features */}
-          {features.differentiator.length > 0 && (
-            <div>
-              <h3 className="text-md font-semibold text-blue-700 mb-3 flex items-center gap-2">
-                🔵 Differentiators ({features.differentiator.length})
-                <span className="text-xs font-normal text-gray-500">Beat the competition</span>
-              </h3>
-              <div className="space-y-3">
-                {features.differentiator.map(feature => (
-                  <FeatureCard 
-                    key={feature.id} 
-                    feature={feature}
-                    expanded={expandedFeature === feature.id}
-                    onToggle={() => setExpandedFeature(expandedFeature === feature.id ? null : feature.id)}
-                  />
-                ))}
+              <div className="flex items-center justify-between mt-2 text-xs text-gray-500">
+                <span className="capitalize">{market.category.replace(/_/g, ' ')}</span>
+                <span>Confidence: {(market.confidence * 100).toFixed(0)}%</span>
               </div>
             </div>
           )}
         </div>
+      </Card>
+
+      {/* MVP Features */}
+      {features && totalFeatures > 0 && (
+        <Card padding="lg">
+          <CardHeader>
+            <CardTitle subtitle={`${totalFeatures} features extracted from user pain points`}>
+              🎯 MVP Feature Requirements
+            </CardTitle>
+          </CardHeader>
+          
+          <div className="space-y-6">
+            {/* Must-have */}
+            {features.must_have.length > 0 && (
+              <FeatureSection 
+                title="Must-have"
+                subtitle="Core features - build these first"
+                icon="🔴"
+                features={features.must_have}
+                expandedFeature={expandedFeature}
+                onToggle={setExpandedFeature}
+                variant="red"
+              />
+            )}
+            
+            {/* Nice-to-have */}
+            {features.nice_to_have.length > 0 && (
+              <FeatureSection 
+                title="Nice-to-have"
+                subtitle="Add after launch"
+                icon="🟡"
+                features={features.nice_to_have}
+                expandedFeature={expandedFeature}
+                onToggle={setExpandedFeature}
+                variant="yellow"
+              />
+            )}
+            
+            {/* Differentiators */}
+            {features.differentiator.length > 0 && (
+              <FeatureSection 
+                title="Differentiators"
+                subtitle="Beat the competition"
+                icon="🔵"
+                features={features.differentiator}
+                expandedFeature={expandedFeature}
+                onToggle={setExpandedFeature}
+                variant="blue"
+              />
+            )}
+          </div>
+        </Card>
       )}
 
-      {/* Target Customer & How It Works */}
+      {/* Target & How It Works */}
       <div className="grid md:grid-cols-2 gap-6">
-        <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
-          <h2 className="text-lg font-bold text-gray-900 mb-3">🎯 Target Customer</h2>
-          <p className="text-gray-700">{target_customer}</p>
-        </div>
+        <Card padding="lg">
+          <CardHeader>
+            <CardTitle>🎯 Target Customer</CardTitle>
+          </CardHeader>
+          <p className="text-gray-300">{target_customer}</p>
+        </Card>
 
-        <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
-          <h2 className="text-lg font-bold text-gray-900 mb-3">⚙️ How It Works</h2>
+        <Card padding="lg">
+          <CardHeader>
+            <CardTitle>⚙️ How It Works</CardTitle>
+          </CardHeader>
           <ul className="space-y-2">
             {how_it_works.map((feature, i) => (
-              <li key={i} className="flex items-start gap-2 text-gray-700">
-                <span className="text-purple-500 font-bold">✓</span>
+              <li key={i} className="flex items-start gap-3 text-gray-300">
+                <span className="text-brand-400 mt-0.5 font-bold">✓</span>
                 {feature}
               </li>
             ))}
           </ul>
-        </div>
+        </Card>
       </div>
 
       {/* Source Communities */}
-      <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
-        <h2 className="text-lg font-bold text-gray-900 mb-3">📊 Source Communities</h2>
+      <Card padding="lg">
+        <CardHeader>
+          <CardTitle>📊 Source Communities</CardTitle>
+        </CardHeader>
         <div className="flex flex-wrap gap-2">
           {subreddits.map(sub => (
             <a
@@ -385,58 +321,109 @@ export default function OpportunityPage() {
               href={sub === 'hackernews' ? 'https://news.ycombinator.com' : `https://reddit.com/r/${sub}`}
               target="_blank"
               rel="noopener noreferrer"
-              className={`px-3 py-1 rounded-full text-sm transition-colors ${
-                sub === 'hackernews' 
-                  ? 'bg-orange-100 text-orange-700 hover:bg-orange-200'
-                  : 'bg-purple-50 text-purple-700 hover:bg-purple-100'
-              }`}
+              className="transition-transform hover:scale-105"
             >
-              {sub === 'hackernews' ? '🔶 HackerNews' : `r/${sub}`}
+              <Badge 
+                variant={sub === 'hackernews' ? 'orange' : 'purple'} 
+                size="md"
+              >
+                {sub === 'hackernews' ? '🔶 HackerNews' : `r/${sub}`}
+              </Badge>
             </a>
           ))}
         </div>
         {hnQuotes > 0 && (
-          <p className="text-sm text-gray-500 mt-3">
+          <p className="text-sm text-gray-500 mt-4">
             {redditQuotes} from Reddit • {hnQuotes} from HackerNews
           </p>
         )}
-      </div>
+      </Card>
 
-      {/* All Quotes */}
-      <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-gray-900">
-            💬 Real User Quotes ({all_quotes.length})
-          </h2>
-          {all_quotes.length > 5 && (
-            <button
-              onClick={() => setShowAllQuotes(!showAllQuotes)}
-              className="text-purple-600 hover:underline text-sm font-medium"
-            >
-              {showAllQuotes ? 'Show less' : `View all ${all_quotes.length} quotes`}
-            </button>
-          )}
-        </div>
+      {/* Quotes */}
+      <Card padding="lg">
+        <CardHeader 
+          action={
+            all_quotes.length > 5 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowAllQuotes(!showAllQuotes)}
+              >
+                {showAllQuotes ? 'Show less' : `View all ${all_quotes.length}`}
+              </Button>
+            )
+          }
+        >
+          <CardTitle>💬 Real User Quotes ({all_quotes.length})</CardTitle>
+        </CardHeader>
 
         <div className="space-y-4">
           {displayQuotes.map((quote, i) => (
-            <QuoteCard key={i} quote={quote} getSeverityColor={getSeverityColor} />
+            <QuoteCard key={i} quote={quote} />
           ))}
         </div>
 
         {!showAllQuotes && all_quotes.length > 5 && (
-          <button
-            onClick={() => setShowAllQuotes(true)}
-            className="mt-4 w-full py-3 bg-gray-50 hover:bg-gray-100 rounded-lg text-gray-600 font-medium transition-colors"
-          >
-            Show all {all_quotes.length} quotes
-          </button>
+          <CardFooter>
+            <Button
+              variant="secondary"
+              fullWidth
+              onClick={() => setShowAllQuotes(true)}
+            >
+              Show all {all_quotes.length} quotes
+            </Button>
+          </CardFooter>
         )}
+      </Card>
+    </div>
+  );
+}
+
+// Feature Section Component
+function FeatureSection({
+  title,
+  subtitle,
+  icon,
+  features,
+  expandedFeature,
+  onToggle,
+  variant
+}: {
+  title: string;
+  subtitle: string;
+  icon: string;
+  features: MVPFeature[];
+  expandedFeature: number | null;
+  onToggle: (id: number | null) => void;
+  variant: 'red' | 'yellow' | 'blue';
+}) {
+  const variantColors = {
+    red: 'text-red-400',
+    yellow: 'text-yellow-400',
+    blue: 'text-blue-400',
+  };
+  
+  return (
+    <div>
+      <h3 className={`text-md font-semibold ${variantColors[variant]} mb-3 flex items-center gap-2`}>
+        {icon} {title} ({features.length})
+        <span className="text-xs font-normal text-gray-500">{subtitle}</span>
+      </h3>
+      <div className="space-y-2">
+        {features.map(feature => (
+          <FeatureCard 
+            key={feature.id} 
+            feature={feature} 
+            expanded={expandedFeature === feature.id}
+            onToggle={() => onToggle(expandedFeature === feature.id ? null : feature.id)}
+          />
+        ))}
       </div>
     </div>
   );
 }
 
+// Feature Card Component
 function FeatureCard({ 
   feature, 
   expanded, 
@@ -452,38 +439,34 @@ function FeatureCard({
   } catch {}
   
   return (
-    <div className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 transition-colors">
+    <div className="card-hover p-4" onClick={onToggle}>
       <div className="flex items-start justify-between">
         <div className="flex-1">
-          <div className="flex items-center gap-2 mb-1">
-            <h4 className="font-semibold text-gray-900">{feature.feature_name}</h4>
-            <span className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded-full">
-              Priority: {feature.priority_score}
-            </span>
+          <div className="flex flex-wrap items-center gap-2 mb-1">
+            <h4 className="font-semibold text-white">{feature.feature_name}</h4>
+            <Badge variant="gray" size="sm">Priority: {feature.priority_score}</Badge>
             {feature.mention_count > 1 && (
-              <span className="px-2 py-0.5 text-xs bg-purple-50 text-purple-600 rounded-full">
-                {feature.mention_count} mentions
-              </span>
+              <Badge variant="brand" size="sm">{feature.mention_count} mentions</Badge>
             )}
           </div>
-          <p className="text-sm text-gray-600">{feature.description}</p>
+          <p className="text-sm text-gray-400">{feature.description}</p>
         </div>
         {sourceQuotes.length > 0 && (
-          <button 
-            onClick={onToggle}
-            className="ml-3 text-gray-400 hover:text-gray-600"
+          <svg 
+            className={`w-5 h-5 text-gray-500 transition-transform ${expanded ? 'rotate-180' : ''}`}
+            fill="none" stroke="currentColor" viewBox="0 0 24 24"
           >
-            {expanded ? '▲' : '▼'}
-          </button>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
         )}
       </div>
       
       {expanded && sourceQuotes.length > 0 && (
-        <div className="mt-3 pt-3 border-t border-gray-100">
+        <div className="mt-4 pt-4 border-t border-dark-600 animate-fade-in">
           <div className="text-xs font-semibold text-gray-500 mb-2">Source quotes:</div>
           <div className="space-y-2">
             {sourceQuotes.map((quote, i) => (
-              <p key={i} className="text-sm text-gray-600 italic pl-3 border-l-2 border-gray-200">
+              <p key={i} className="text-sm text-gray-400 italic pl-3 border-l-2 border-brand-500/50">
                 "{quote}"
               </p>
             ))}
@@ -494,28 +477,28 @@ function FeatureCard({
   );
 }
 
-function QuoteCard({ quote, getSeverityColor }: { quote: Quote; getSeverityColor: (s: string) => string }) {
+// Quote Card Component
+function QuoteCard({ quote }: { quote: Quote }) {
   const isHN = quote.subreddit === 'hackernews';
   
   return (
-    <div className={`border-l-4 pl-4 py-2 ${isHN ? 'border-orange-300' : 'border-purple-200'}`}>
-      <p className="text-gray-700 italic">"{quote.text}"</p>
-      <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-        <span className="text-gray-500">— {quote.author}</span>
-        {isHN ? (
-          <span className="text-orange-600">🔶 HackerNews</span>
-        ) : (
-          <span className="text-purple-600">r/{quote.subreddit}</span>
-        )}
+    <div className={`
+      pl-4 py-3 border-l-3 rounded-r-lg
+      ${isHN ? 'border-l-orange-500 bg-orange-500/5' : 'border-l-brand-500 bg-brand-500/5'}
+    `}>
+      <p className="text-gray-300 italic">"{quote.text}"</p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <span className="text-sm text-gray-500">— {quote.author}</span>
+        <Badge variant={isHN ? 'orange' : 'purple'} size="sm">
+          {isHN ? '🔶 HackerNews' : `r/${quote.subreddit}`}
+        </Badge>
         {quote.persona && (
-          <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full text-xs capitalize">
+          <Badge variant="blue" size="sm">
             {quote.persona.replace(/_/g, ' ')}
-          </span>
+          </Badge>
         )}
         {quote.severity && (
-          <span className={`px-2 py-0.5 rounded-full text-xs border ${getSeverityColor(quote.severity)}`}>
-            {quote.severity}
-          </span>
+          <SeverityBadge severity={quote.severity} size="sm" />
         )}
       </div>
     </div>

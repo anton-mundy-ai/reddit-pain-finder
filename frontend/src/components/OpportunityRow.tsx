@@ -1,15 +1,17 @@
-// v11: Compact opportunity row with embedding info + market sizing
+// v17: Redesigned opportunity row with professional styling
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Opportunity, MarketTier } from '../types';
+import { Badge, MarketTierBadge, SeverityBadge } from './ui';
 
 interface Props {
   opportunity: Opportunity;
   rank: number;
   showMentionsBadge?: boolean;
+  showRegionPercentage?: boolean;  // v16: Show region percentage when filtering by region
 }
 
-export default function OpportunityRow({ opportunity, rank, showMentionsBadge = false }: Props) {
+export default function OpportunityRow({ opportunity, rank, showMentionsBadge = false, showRegionPercentage = false }: Props) {
   const [expanded, setExpanded] = useState(false);
   
   const { 
@@ -29,107 +31,136 @@ export default function OpportunityRow({ opportunity, rank, showMentionsBadge = 
     total_score,
     severity_breakdown,
     avg_similarity,
-    market  // v11: market sizing
+    market,
+    region_count,      // v16
+    region_percentage  // v16
   } = opportunity;
 
   const getScoreColor = (score: number) => {
-    if (score >= 70) return 'text-emerald-600 bg-emerald-50';
-    if (score >= 50) return 'text-blue-600 bg-blue-50';
-    if (score >= 30) return 'text-amber-600 bg-amber-50';
-    return 'text-gray-600 bg-gray-50';
+    if (score >= 70) return 'bg-green-500/20 text-green-400 border-green-500/30';
+    if (score >= 50) return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
+    if (score >= 30) return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
+    return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
   };
 
-  const getMentionsColor = (count: number) => {
-    if (count >= 10) return 'bg-green-500 text-white';
-    if (count >= 5) return 'bg-green-100 text-green-700';
-    if (count >= 3) return 'bg-yellow-100 text-yellow-700';
-    return 'bg-gray-100 text-gray-600';
-  };
-  
-  // v11: Market tier colors
-  const getMarketTierColor = (tier: MarketTier) => {
-    switch (tier) {
-      case '$10B+': return 'bg-purple-600 text-white';
-      case '$1B': return 'bg-purple-500 text-white';
-      case '$100M': return 'bg-indigo-500 text-white';
-      case '$10M': return 'bg-blue-400 text-white';
-      case '$1M': return 'bg-blue-200 text-blue-800';
-      default: return 'bg-gray-200 text-gray-600';
-    }
+  const getMentionsVariant = (count: number) => {
+    if (count >= 10) return 'bg-green-600 text-white';
+    if (count >= 5) return 'bg-green-500/20 text-green-400';
+    if (count >= 3) return 'bg-yellow-500/20 text-yellow-400';
+    return 'bg-dark-600 text-gray-400';
   };
 
   const getSeverityColor = (severity: string) => {
-    switch (severity) {
-      case 'critical': return 'bg-red-500';
-      case 'high': return 'bg-orange-500';
-      case 'medium': return 'bg-yellow-500';
-      case 'low': return 'bg-green-500';
-      default: return 'bg-gray-400';
-    }
+    const colors: Record<string, string> = {
+      critical: 'bg-red-500',
+      high: 'bg-orange-500',
+      medium: 'bg-yellow-500',
+      low: 'bg-green-500',
+    };
+    return colors[severity] || 'bg-gray-500';
   };
 
-  // Total for severity bar
   const severityTotal = Object.values(severity_breakdown || {}).reduce((a, b) => a + b, 0);
 
   return (
-    <div className="border-b border-gray-100 last:border-b-0">
+    <div className="group">
+      {/* Main Row */}
       <div 
-        className="flex items-center gap-4 px-4 py-3 hover:bg-gray-50 cursor-pointer transition-colors"
+        className="flex items-center gap-3 sm:gap-4 px-4 py-3 cursor-pointer transition-colors hover:bg-dark-750"
         onClick={() => setExpanded(!expanded)}
       >
-        <div className="w-8 text-center text-sm text-gray-400 font-medium">
-          #{rank}
+        {/* Rank */}
+        <div className="w-8 sm:w-10 text-center">
+          <span className={`
+            text-sm font-semibold
+            ${rank <= 3 ? 'text-brand-400' : 'text-gray-500'}
+          `}>
+            {rank <= 3 ? ['🥇', '🥈', '🥉'][rank - 1] : `#${rank}`}
+          </span>
         </div>
         
+        {/* Product Info */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-gray-900 truncate">{product_name}</span>
-            <span className="px-1.5 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded">
-              v{version}
-            </span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-white truncate">{product_name}</span>
+            <Badge variant="brand" size="sm">v{version}</Badge>
             {broad_category && (
-              <span className="px-1.5 py-0.5 text-xs bg-gray-100 text-gray-600 rounded capitalize">
-                {broad_category}
-              </span>
+              <Badge variant="gray" size="sm">{broad_category}</Badge>
             )}
           </div>
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-sm text-gray-500 truncate">{tagline}</span>
-            <span className="px-2 py-0.5 text-xs bg-purple-50 text-purple-600 rounded-full capitalize">
+          <div className="flex items-center gap-2 mt-1">
+            <span className="text-sm text-gray-400 truncate">{tagline}</span>
+          </div>
+          <div className="flex items-center gap-2 mt-1.5">
+            <Badge variant="purple" size="sm">
               {(topic_canonical || topic || '').replace(/_/g, ' ')}
-            </span>
+            </Badge>
           </div>
         </div>
         
-        {/* v11: Market size badge */}
-        {market && (
-          <div className={`px-2.5 py-1 rounded-lg text-sm font-bold ${getMarketTierColor(market.tam_tier)}`} title={`TAM: ${market.tam_tier}`}>
-            {market.tam_tier}
+        {/* v16: Region Percentage (when filtering by region) */}
+        {showRegionPercentage && (
+          <div className="w-16 text-center">
+            {region_percentage ? (
+              <div className="flex flex-col items-center">
+                <span className={`text-sm font-bold ${
+                  region_percentage >= 50 ? 'text-emerald-400' : 
+                  region_percentage >= 25 ? 'text-emerald-500' : 'text-gray-400'
+                }`}>
+                  {region_percentage}%
+                </span>
+                {region_count && (
+                  <span className="text-2xs text-gray-500">{region_count} pts</span>
+                )}
+              </div>
+            ) : (
+              <span className="text-xs text-gray-500">-</span>
+            )}
           </div>
         )}
         
-        {/* v7: Prominent mention count */}
-        <div className={`flex items-center gap-1 px-3 py-1.5 rounded-lg font-semibold ${getMentionsColor(social_proof_count)}`}>
+        {/* Market Size */}
+        <div className="hidden sm:block w-20 text-center">
+          {market ? (
+            <MarketTierBadge tier={market.tam_tier} size="sm" />
+          ) : (
+            <span className="text-xs text-gray-500">-</span>
+          )}
+        </div>
+        
+        {/* Mentions */}
+        <div className={`
+          flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold min-w-[70px] justify-center
+          ${getMentionsVariant(social_proof_count)}
+        `}>
           <span className="text-sm">👥</span>
           <span className="text-lg">{social_proof_count}</span>
         </div>
         
-        <div className={`px-2.5 py-1 rounded-lg text-sm font-bold ${getScoreColor(total_score)}`}>
+        {/* Score */}
+        <div className={`
+          hidden sm:flex px-2.5 py-1 rounded-lg text-sm font-bold border
+          ${getScoreColor(total_score)}
+        `}>
           {total_score}
         </div>
         
         {/* Personas */}
-        <div className="hidden md:flex gap-1 min-w-[120px] flex-wrap">
+        <div className="hidden lg:flex gap-1.5 w-32 flex-wrap">
           {(personas || []).slice(0, 2).map(p => (
-            <span key={p} className="px-2 py-0.5 text-xs bg-blue-50 text-blue-700 rounded-full capitalize">
+            <Badge key={p} variant="blue" size="sm">
               {p.replace(/_/g, ' ')}
-            </span>
+            </Badge>
           ))}
+          {(personas || []).length > 2 && (
+            <Badge variant="gray" size="sm">+{personas.length - 2}</Badge>
+          )}
         </div>
         
-        <div className="text-gray-400">
+        {/* Expand Icon */}
+        <div className="w-6 flex justify-center">
           <svg 
-            className={`w-5 h-5 transition-transform ${expanded ? 'rotate-180' : ''}`} 
+            className={`w-5 h-5 text-gray-500 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} 
             fill="none" 
             stroke="currentColor" 
             viewBox="0 0 24 24"
@@ -139,115 +170,110 @@ export default function OpportunityRow({ opportunity, rank, showMentionsBadge = 
         </div>
       </div>
       
+      {/* Expanded Content */}
       {expanded && (
-        <div className="px-4 pb-4 pt-2 bg-gray-50 border-t border-gray-100">
-          <div className="ml-12 grid md:grid-cols-2 gap-6">
-            <div>
-              <h4 className="text-sm font-semibold text-gray-700 mb-2">Sample Quotes</h4>
-              <div className="space-y-2">
-                {(top_quotes || []).slice(0, 3).map((quote, i) => (
-                  <div key={i} className="text-sm text-gray-600 italic border-l-2 border-purple-200 pl-3">
-                    "{quote.text.slice(0, 150)}{quote.text.length > 150 ? '...' : ''}"
-                    <div className="flex items-center gap-2 mt-1 not-italic text-xs text-gray-500">
-                      <span>— {quote.author}</span>
-                      {quote.persona && (
-                        <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded capitalize">
-                          {quote.persona.replace(/_/g, ' ')}
-                        </span>
-                      )}
-                      {quote.severity && (
-                        <span className={`px-1.5 py-0.5 text-white rounded text-[10px] ${getSeverityColor(quote.severity)}`}>
-                          {quote.severity}
-                        </span>
-                      )}
-                      {(quote as any).similarity && (
-                        <span className="px-1.5 py-0.5 bg-purple-50 text-purple-600 rounded text-[10px]">
-                          {((quote as any).similarity * 100).toFixed(0)}% match
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              
-              {/* Severity breakdown bar */}
-              {severityTotal > 0 && (
-                <div className="mt-4">
-                  <h4 className="text-sm font-semibold text-gray-700 mb-1">Severity Distribution</h4>
-                  <div className="flex h-3 rounded-full overflow-hidden bg-gray-200">
-                    {(severity_breakdown?.critical || 0) > 0 && (
-                      <div 
-                        className="bg-red-500" 
-                        style={{ width: `${(severity_breakdown.critical / severityTotal) * 100}%` }}
-                        title={`Critical: ${severity_breakdown.critical}`}
-                      />
-                    )}
-                    {(severity_breakdown?.high || 0) > 0 && (
-                      <div 
-                        className="bg-orange-500" 
-                        style={{ width: `${(severity_breakdown.high / severityTotal) * 100}%` }}
-                        title={`High: ${severity_breakdown.high}`}
-                      />
-                    )}
-                    {(severity_breakdown?.medium || 0) > 0 && (
-                      <div 
-                        className="bg-yellow-500" 
-                        style={{ width: `${(severity_breakdown.medium / severityTotal) * 100}%` }}
-                        title={`Medium: ${severity_breakdown.medium}`}
-                      />
-                    )}
-                    {(severity_breakdown?.low || 0) > 0 && (
-                      <div 
-                        className="bg-green-500" 
-                        style={{ width: `${(severity_breakdown.low / severityTotal) * 100}%` }}
-                        title={`Low: ${severity_breakdown.low}`}
-                      />
-                    )}
-                  </div>
-                  <div className="flex justify-between text-[10px] text-gray-500 mt-1">
-                    <span>🔴 Critical</span>
-                    <span>🟠 High</span>
-                    <span>🟡 Medium</span>
-                    <span>🟢 Low</span>
-                  </div>
-                </div>
-              )}
-              
-              {/* v7: Cluster cohesion indicator */}
-              {avg_similarity && avg_similarity > 0 && (
-                <div className="mt-4 flex items-center gap-2 text-sm">
-                  <span className="text-gray-600">Cluster cohesion:</span>
-                  <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-purple-500" 
-                      style={{ width: `${avg_similarity * 100}%` }}
-                    />
-                  </div>
-                  <span className="text-purple-600 font-medium">{(avg_similarity * 100).toFixed(0)}%</span>
-                </div>
-              )}
-              
-              {/* v11: Market sizing breakdown */}
-              {market && (
-                <div className="mt-4 p-3 bg-gradient-to-r from-purple-50 to-indigo-50 rounded-lg border border-purple-100">
-                  <h4 className="text-sm font-semibold text-gray-700 mb-2">💰 Market Size Estimate</h4>
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div>
-                      <div className="text-xs text-gray-500">TAM</div>
-                      <div className={`text-sm font-bold px-2 py-0.5 rounded ${getMarketTierColor(market.tam_tier)}`}>
-                        {market.tam_tier}
+        <div className="px-4 pb-4 pt-2 bg-dark-750/50 border-t border-dark-600/50 animate-slide-down">
+          <div className="ml-8 sm:ml-10 grid md:grid-cols-2 gap-6">
+            {/* Left Column */}
+            <div className="space-y-4">
+              {/* Sample Quotes */}
+              <div>
+                <h4 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
+                  <span>💬</span> Sample Quotes
+                </h4>
+                <div className="space-y-3">
+                  {(top_quotes || []).slice(0, 3).map((quote, i) => (
+                    <div key={i} className="relative pl-4 border-l-2 border-brand-500/50">
+                      <p className="text-sm text-gray-300 italic">
+                        "{quote.text.slice(0, 150)}{quote.text.length > 150 ? '...' : ''}"
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2 mt-2">
+                        <span className="text-xs text-gray-500">— {quote.author}</span>
+                        {quote.persona && (
+                          <Badge variant="blue" size="sm">{quote.persona.replace(/_/g, ' ')}</Badge>
+                        )}
+                        {quote.severity && (
+                          <SeverityBadge severity={quote.severity} size="sm" />
+                        )}
+                        {(quote as any).similarity && (
+                          <Badge variant="purple" size="sm">
+                            {((quote as any).similarity * 100).toFixed(0)}% match
+                          </Badge>
+                        )}
                       </div>
                     </div>
+                  ))}
+                </div>
+              </div>
+              
+              {/* Severity Distribution */}
+              {severityTotal > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-300 mb-2">Severity Distribution</h4>
+                  <div className="flex h-2 rounded-full overflow-hidden bg-dark-600">
+                    {(['critical', 'high', 'medium', 'low'] as const).map(s => {
+                      const count = severity_breakdown?.[s] || 0;
+                      if (count === 0) return null;
+                      return (
+                        <div 
+                          key={s}
+                          className={`${getSeverityColor(s)} transition-all duration-500`}
+                          style={{ width: `${(count / severityTotal) * 100}%` }}
+                          title={`${s}: ${count}`}
+                        />
+                      );
+                    })}
+                  </div>
+                  <div className="flex justify-between text-2xs text-gray-500 mt-1.5">
+                    {(['critical', 'high', 'medium', 'low'] as const).map(s => (
+                      <span key={s} className="flex items-center gap-1">
+                        <span className={`w-2 h-2 rounded-full ${getSeverityColor(s)}`} />
+                        {s}: {severity_breakdown?.[s] || 0}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {/* Cluster Cohesion */}
+              {avg_similarity && avg_similarity > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-300 mb-2">Cluster Cohesion</h4>
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 h-2 bg-dark-600 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-gradient-to-r from-brand-600 to-brand-400 rounded-full transition-all duration-500"
+                        style={{ width: `${avg_similarity * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-sm font-semibold text-brand-400">
+                      {(avg_similarity * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                </div>
+              )}
+              
+              {/* Market Sizing */}
+              {market && (
+                <div className="p-4 rounded-xl bg-gradient-to-r from-brand-500/10 to-purple-500/10 border border-brand-500/20">
+                  <h4 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
+                    <span>💰</span> Market Size Estimate
+                  </h4>
+                  <div className="grid grid-cols-3 gap-3 text-center">
                     <div>
-                      <div className="text-xs text-gray-500">SAM</div>
-                      <div className="text-sm font-semibold text-gray-700">{market.sam_tier}</div>
+                      <div className="text-xs text-gray-500 mb-1">TAM</div>
+                      <MarketTierBadge tier={market.tam_tier} size="md" />
                     </div>
                     <div>
-                      <div className="text-xs text-gray-500">SOM</div>
-                      <div className="text-sm font-semibold text-green-600">{market.som_tier}</div>
+                      <div className="text-xs text-gray-500 mb-1">SAM</div>
+                      <Badge variant="gray" size="md">{market.sam_tier}</Badge>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">SOM</div>
+                      <Badge variant="green" size="md">{market.som_tier}</Badge>
                     </div>
                   </div>
-                  <div className="flex items-center justify-between mt-2 text-xs text-gray-500">
+                  <div className="flex items-center justify-between mt-3 text-xs text-gray-500">
                     <span className="capitalize">{market.category.replace(/_/g, ' ')}</span>
                     <span>Confidence: {(market.confidence * 100).toFixed(0)}%</span>
                   </div>
@@ -255,46 +281,65 @@ export default function OpportunityRow({ opportunity, rank, showMentionsBadge = 
               )}
             </div>
             
-            <div>
-              <h4 className="text-sm font-semibold text-gray-700 mb-2">How It Works</h4>
-              <ul className="text-sm text-gray-600 space-y-1 mb-4">
-                {(how_it_works || []).map((feature, i) => (
-                  <li key={i} className="flex items-start gap-2">
-                    <span className="text-purple-500">✓</span>
-                    {feature}
-                  </li>
-                ))}
-              </ul>
+            {/* Right Column */}
+            <div className="space-y-4">
+              {/* How It Works */}
+              <div>
+                <h4 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
+                  <span>⚙️</span> How It Works
+                </h4>
+                <ul className="space-y-2">
+                  {(how_it_works || []).map((feature, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm text-gray-400">
+                      <span className="text-brand-400 mt-0.5">✓</span>
+                      {feature}
+                    </li>
+                  ))}
+                </ul>
+              </div>
               
-              <h4 className="text-sm font-semibold text-gray-700 mb-1">Target Customer</h4>
-              <p className="text-sm text-gray-600 mb-4">{target_customer}</p>
+              {/* Target Customer */}
+              <div>
+                <h4 className="text-sm font-semibold text-gray-300 mb-2 flex items-center gap-2">
+                  <span>🎯</span> Target Customer
+                </h4>
+                <p className="text-sm text-gray-400">{target_customer}</p>
+              </div>
               
-              <div className="flex flex-wrap gap-1">
-                {(subreddits || []).slice(0, 6).map(sub => (
-                  <span key={sub} className={`px-2 py-0.5 text-xs rounded-full ${
-                    sub === 'hackernews' 
-                      ? 'bg-orange-100 text-orange-700' 
-                      : 'bg-gray-200 text-gray-600'
-                  }`}>
-                    {sub === 'hackernews' ? '🔶 HN' : `r/${sub}`}
-                  </span>
-                ))}
-                {(subreddits || []).length > 6 && (
-                  <span className="px-2 py-0.5 text-xs bg-gray-200 text-gray-500 rounded-full">
-                    +{subreddits.length - 6}
-                  </span>
-                )}
+              {/* Source Communities */}
+              <div>
+                <h4 className="text-sm font-semibold text-gray-300 mb-2 flex items-center gap-2">
+                  <span>📊</span> Source Communities
+                </h4>
+                <div className="flex flex-wrap gap-1.5">
+                  {(subreddits || []).slice(0, 8).map(sub => (
+                    <Badge 
+                      key={sub} 
+                      variant={sub === 'hackernews' ? 'orange' : 'gray'} 
+                      size="sm"
+                    >
+                      {sub === 'hackernews' ? '🔶 HN' : `r/${sub}`}
+                    </Badge>
+                  ))}
+                  {(subreddits || []).length > 8 && (
+                    <Badge variant="gray" size="sm">+{subreddits.length - 8}</Badge>
+                  )}
+                </div>
               </div>
             </div>
           </div>
           
-          <div className="ml-12 mt-4 pt-3 border-t border-gray-200">
+          {/* Footer */}
+          <div className="ml-8 sm:ml-10 mt-4 pt-4 border-t border-dark-600/50">
             <Link 
               to={`/opportunity/${id}`}
-              className="text-sm text-purple-600 hover:text-purple-800 font-medium"
+              className="inline-flex items-center gap-2 text-sm text-brand-400 hover:text-brand-300 font-medium transition-colors"
               onClick={(e) => e.stopPropagation()}
             >
-              View all {social_proof_count} quotes →
+              View all {social_proof_count} quotes & details
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
             </Link>
           </div>
         </div>

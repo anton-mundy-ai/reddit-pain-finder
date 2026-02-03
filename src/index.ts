@@ -5,7 +5,7 @@ import { Env, OpportunityBrief, Quote, PainPointView, TopicView } from './types'
 import { runIngestion } from './layers/ingestion';
 import { runExtraction } from './layers/extraction';
 import { runTagging, getTopicStats } from './layers/tagging';
-import { runClustering, getClusterMembers, mergeSimularClusters } from './layers/clustering';
+import { runClustering, getClusterMembers, mergeSimularClusters, updateClusterStats } from './layers/clustering';
 import { runSynthesis } from './layers/synthesis';
 import { runScoring, getTopOpportunities } from './layers/scoring';
 import { runTopicMerge, shouldRunTopicMerge, incrementCronCount } from './layers/topic-merge';
@@ -42,7 +42,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (path === '/health' || path === '/') {
     return jsonResponse({ 
       status: 'ok', 
-      version: 'v7-embeddings',
+      version: 'v8-quality',
       timestamp: Date.now() 
     });
   }
@@ -282,7 +282,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         qualifying_clusters: (qualifyingClusters as any)?.count || 0,  // 5+ members
         products_generated: (productCount as any)?.count || 0,
         avg_cluster_size: Math.round(((avgClusterSize as any)?.avg || 0) * 10) / 10,
-        version: 'v7-embeddings',
+        version: 'v8-quality',
         last_updated: Date.now()
       });
     } catch (error) {
@@ -334,6 +334,12 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   // v7: Re-cluster existing data endpoint
   if (path === '/api/trigger/recluster' && request.method === 'POST') {
     const result = await reclusterExistingData(env);
+    return jsonResponse({ success: true, result });
+  }
+  
+  // v8: Fix cluster stats endpoint
+  if (path === '/api/trigger/fix-stats' && request.method === 'POST') {
+    const result = await fixAllClusterStats(env);
     return jsonResponse({ success: true, result });
   }
   
@@ -509,6 +515,30 @@ async function reclusterExistingData(env: Env): Promise<{
     clusters_before: clustersBefore.cnt,
     clusters_after: clustersAfter.cnt
   };
+}
+
+/**
+ * Fix stats for all clusters
+ */
+async function fixAllClusterStats(env: Env): Promise<{ fixed: number }> {
+  const db = env.DB;
+  
+  // Get all cluster IDs
+  const clusters = await db.prepare(
+    "SELECT id FROM pain_clusters"
+  ).all();
+  
+  const clusterIds = (clusters.results || []).map((c: any) => c.id);
+  console.log(`Fixing stats for ${clusterIds.length} clusters...`);
+  
+  let fixed = 0;
+  for (const clusterId of clusterIds) {
+    await updateClusterStats(db, clusterId);
+    fixed++;
+  }
+  
+  console.log(`Fixed ${fixed} cluster stats`);
+  return { fixed };
 }
 
 async function runFullPipeline(env: Env): Promise<any> {

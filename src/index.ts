@@ -1,5 +1,5 @@
-// Reddit Pain Point Finder v10 - Main Worker Entry Point
-// Architecture: Embedding-based semantic clustering + Trend Detection
+// Reddit Pain Point Finder v11 - Main Worker Entry Point
+// Architecture: Embedding-based semantic clustering + Trend Detection + Market Sizing
 
 import { Env, OpportunityBrief, Quote, PainPointView, TopicView } from './types';
 import { runIngestion } from './layers/ingestion';
@@ -11,6 +11,7 @@ import { runScoring, getTopOpportunities } from './layers/scoring';
 import { runTopicMerge, shouldRunTopicMerge, incrementCronCount } from './layers/topic-merge';
 import { runCompetitorMining, getCompetitorStats, getProductComplaints, getFeatureGaps, getCategoryStats, ALL_PRODUCTS, NICHE_VERTICALS } from './layers/competitor-mining';
 import { runTrendSnapshot, getTrends, getTrendHistory, getHotTopics, getCoolingTopics, getTrendStats } from './layers/trend-detection';
+import { runMarketSizing, getMarketEstimate, getAllMarketEstimates, getMarketSizingStats } from './layers/market-sizing';
 import { generateEmbeddingsBatch, storeEmbedding } from './utils/embeddings';
 import { normalizeTopic, extractBroadCategory } from './utils/normalize';
 
@@ -44,7 +45,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (path === '/health' || path === '/') {
     return jsonResponse({ 
       status: 'ok', 
-      version: 'v10-trends',
+      version: 'v11-market-sizing',
       timestamp: Date.now() 
     });
   }
@@ -182,17 +183,77 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       return jsonResponse({ error: 'Failed to fetch feature gaps' }, 500);
     }
   }
+  
+  // ===============================
+  // v11: Market Sizing Endpoints
+  // ===============================
+  
+  // Get all market estimates with stats
+  if (path === '/api/market') {
+    try {
+      const limit = parseInt(url.searchParams.get('limit') || '100');
+      const sortBy = url.searchParams.get('sort') || 'tam';  // tam, som, confidence
+      
+      const [estimates, stats] = await Promise.all([
+        getAllMarketEstimates(env.DB, limit),
+        getMarketSizingStats(env.DB)
+      ]);
+      
+      // Sort if needed
+      if (sortBy === 'som') {
+        estimates.sort((a: any, b: any) => b.som_estimate - a.som_estimate);
+      } else if (sortBy === 'confidence') {
+        estimates.sort((a: any, b: any) => b.confidence - a.confidence);
+      }
+      
+      return jsonResponse({ estimates, stats });
+    } catch (error) {
+      console.error('Error fetching market estimates:', error);
+      return jsonResponse({ error: 'Failed to fetch market estimates' }, 500);
+    }
+  }
+  
+  // Get market estimate for a specific opportunity
+  if (path.startsWith('/api/market/')) {
+    const id = parseInt(path.split('/').pop() || '0');
+    if (!id) return jsonResponse({ error: 'Invalid ID' }, 400);
+    
+    try {
+      const estimate = await getMarketEstimate(env.DB, id);
+      if (!estimate) {
+        return jsonResponse({ error: 'No market estimate found', cluster_id: id }, 404);
+      }
+      return jsonResponse({ estimate });
+    } catch (error) {
+      console.error('Error fetching market estimate:', error);
+      return jsonResponse({ error: 'Failed to fetch market estimate' }, 500);
+    }
+  }
 
-  // v7: Get opportunities with filter control
+  // v11: Get opportunities with filter control and market data
   if (path === '/api/opportunities') {
     const limit = parseInt(url.searchParams.get('limit') || '50');
     const minMentions = parseInt(url.searchParams.get('min') || '5');  // Default 5
     const showAll = url.searchParams.get('all') === 'true';           // Override filter
+    const sortBy = url.searchParams.get('sort') || 'mentions';        // mentions, score, market
 
     try {
-      const clusters = await getTopOpportunities(env.DB, limit, showAll ? 1 : minMentions);
+      // v11: Join with market estimates
+      const clusters = await env.DB.prepare(`
+        SELECT c.*, 
+               m.tam_estimate, m.tam_tier, m.sam_tier, m.som_tier,
+               m.confidence as market_confidence, m.category as market_category
+        FROM pain_clusters c
+        LEFT JOIN market_estimates m ON c.id = m.cluster_id
+        WHERE c.product_name IS NOT NULL
+          AND c.social_proof_count >= ?
+        ORDER BY ${sortBy === 'market' ? 'COALESCE(m.tam_estimate, 0) DESC,' : ''} 
+                 ${sortBy === 'score' ? 'c.total_score DESC,' : ''} 
+                 c.social_proof_count DESC
+        LIMIT ?
+      `).bind(showAll ? 1 : minMentions, limit).all();
       
-      const opportunities: OpportunityBrief[] = clusters.map((c: any) => {
+      const opportunities = (clusters.results || []).map((c: any) => {
         const categoriesData = safeParseJSON(c.categories, {});
         return {
           id: c.id,
@@ -212,7 +273,16 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           total_score: c.total_score || 0,
           severity_breakdown: categoriesData.severity || {},
           avg_similarity: categoriesData.avgSimilarity || 0,
-          updated_at: c.updated_at
+          updated_at: c.updated_at,
+          // v11: Market sizing data
+          market: c.tam_estimate ? {
+            tam_tier: c.tam_tier,
+            sam_tier: c.sam_tier,
+            som_tier: c.som_tier,
+            tam_estimate: c.tam_estimate,
+            confidence: c.market_confidence,
+            category: c.market_category
+          } : null
         };
       });
       
@@ -423,6 +493,11 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         total_tracked: 0, hot_count: 0, rising_count: 0, stable_count: 0, cooling_count: 0, last_snapshot: null
       }));
       
+      // v11: Add market sizing stats
+      const marketStats = await getMarketSizingStats(env.DB).catch(() => ({
+        total_estimated: 0, by_tier: {}, by_category: {}, avg_confidence: 0
+      }));
+      
       return jsonResponse({
         raw_posts: (postsCount as any)?.count || 0,
         raw_comments: (commentsCount as any)?.count || 0,
@@ -445,7 +520,11 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         trends_rising: trendStats.rising_count,
         trends_cooling: trendStats.cooling_count,
         last_trend_snapshot: trendStats.last_snapshot,
-        version: 'v10-trends',
+        // v11: Market sizing stats
+        market_estimated: marketStats.total_estimated,
+        market_by_tier: marketStats.by_tier,
+        market_avg_confidence: Math.round((marketStats.avg_confidence || 0) * 100) / 100,
+        version: 'v11-market-sizing',
         last_updated: Date.now()
       });
     } catch (error) {
@@ -521,6 +600,46 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (path === '/api/trigger/snapshot-trends' && request.method === 'POST') {
     const result = await runTrendSnapshot(env);
     return jsonResponse({ success: true, result });
+  }
+  
+  // v11: Market sizing trigger
+  if (path === '/api/trigger/estimate-markets' && request.method === 'POST') {
+    const result = await runMarketSizing(env);
+    return jsonResponse({ success: true, result });
+  }
+  
+  // v11: Migration endpoint for market_estimates table
+  if (path === '/api/trigger/migrate-v11' && request.method === 'POST') {
+    try {
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS market_estimates (
+          cluster_id INTEGER PRIMARY KEY,
+          tam_estimate INTEGER NOT NULL,
+          tam_tier TEXT NOT NULL,
+          sam_estimate INTEGER NOT NULL,
+          sam_tier TEXT NOT NULL,
+          som_estimate INTEGER NOT NULL,
+          som_tier TEXT NOT NULL,
+          confidence REAL NOT NULL,
+          category TEXT NOT NULL,
+          geo_scope TEXT NOT NULL,
+          industry_vertical TEXT,
+          reasoning TEXT,
+          estimated_at INTEGER NOT NULL,
+          FOREIGN KEY (cluster_id) REFERENCES pain_clusters(id)
+        )
+      `).run();
+      
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_market_tam ON market_estimates(tam_estimate DESC)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_market_tier ON market_estimates(tam_tier)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_market_category ON market_estimates(category)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_market_confidence ON market_estimates(confidence DESC)`).run();
+      
+      return jsonResponse({ success: true, message: 'v11 migration complete - market_estimates table created' });
+    } catch (error) {
+      console.error('v11 migration error:', error);
+      return jsonResponse({ error: `Migration failed: ${error}` }, 500);
+    }
   }
   
   // v10: Migration endpoint for pain_trends tables
@@ -822,10 +941,10 @@ async function fixAllClusterStats(env: Env): Promise<{ fixed: number }> {
 }
 
 async function runFullPipeline(env: Env): Promise<any> {
-  const results: any = { version: 'v10' };
+  const results: any = { version: 'v11' };
   
   console.log('\n========================================');
-  console.log('Running v10 Pipeline: Trends + Competitor Mining + Clustering');
+  console.log('Running v11 Pipeline: Market Sizing + Trends + Clustering');
   console.log('========================================\n');
   
   // Increment cron counter for topic merge scheduling
@@ -883,8 +1002,14 @@ async function runFullPipeline(env: Env): Promise<any> {
   console.log('\nStep 7: Trend snapshot...');
   results.trends = await runTrendSnapshot(env);
   
+  // v11: Market sizing (every 2nd cron to save API calls)
+  if (cronCount % 2 === 0) {
+    console.log('\nStep 8: Market sizing (every 2nd cron)...');
+    results.market_sizing = await runMarketSizing(env);
+  }
+  
   console.log('\n========================================');
-  console.log('v10 Pipeline Complete!');
+  console.log('v11 Pipeline Complete!');
   console.log('========================================\n');
   
   return results;

@@ -1,7 +1,7 @@
-// v7: Compact opportunity row with embedding info
+// v11: Compact opportunity row with embedding info + market sizing
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Opportunity } from '../types';
+import { Opportunity, MarketTier } from '../types';
 
 interface Props {
   opportunity: Opportunity;
@@ -28,7 +28,8 @@ export default function OpportunityRow({ opportunity, rank, showMentionsBadge = 
     top_quotes,
     total_score,
     severity_breakdown,
-    avg_similarity
+    avg_similarity,
+    market  // v11: market sizing
   } = opportunity;
 
   const getScoreColor = (score: number) => {
@@ -43,6 +44,18 @@ export default function OpportunityRow({ opportunity, rank, showMentionsBadge = 
     if (count >= 5) return 'bg-green-100 text-green-700';
     if (count >= 3) return 'bg-yellow-100 text-yellow-700';
     return 'bg-gray-100 text-gray-600';
+  };
+  
+  // v11: Market tier colors
+  const getMarketTierColor = (tier: MarketTier) => {
+    switch (tier) {
+      case '$10B+': return 'bg-purple-600 text-white';
+      case '$1B': return 'bg-purple-500 text-white';
+      case '$100M': return 'bg-indigo-500 text-white';
+      case '$10M': return 'bg-blue-400 text-white';
+      case '$1M': return 'bg-blue-200 text-blue-800';
+      default: return 'bg-gray-200 text-gray-600';
+    }
   };
 
   const getSeverityColor = (severity: string) => {
@@ -87,6 +100,13 @@ export default function OpportunityRow({ opportunity, rank, showMentionsBadge = 
             </span>
           </div>
         </div>
+        
+        {/* v11: Market size badge */}
+        {market && (
+          <div className={`px-2.5 py-1 rounded-lg text-sm font-bold ${getMarketTierColor(market.tam_tier)}`} title={`TAM: ${market.tam_tier}`}>
+            {market.tam_tier}
+          </div>
+        )}
         
         {/* v7: Prominent mention count */}
         <div className={`flex items-center gap-1 px-3 py-1.5 rounded-lg font-semibold ${getMentionsColor(social_proof_count)}`}>
@@ -204,6 +224,33 @@ export default function OpportunityRow({ opportunity, rank, showMentionsBadge = 
                     />
                   </div>
                   <span className="text-purple-600 font-medium">{(avg_similarity * 100).toFixed(0)}%</span>
+                </div>
+              )}
+              
+              {/* v11: Market sizing breakdown */}
+              {market && (
+                <div className="mt-4 p-3 bg-gradient-to-r from-purple-50 to-indigo-50 rounded-lg border border-purple-100">
+                  <h4 className="text-sm font-semibold text-gray-700 mb-2">💰 Market Size Estimate</h4>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div>
+                      <div className="text-xs text-gray-500">TAM</div>
+                      <div className={`text-sm font-bold px-2 py-0.5 rounded ${getMarketTierColor(market.tam_tier)}`}>
+                        {market.tam_tier}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500">SAM</div>
+                      <div className="text-sm font-semibold text-gray-700">{market.sam_tier}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500">SOM</div>
+                      <div className="text-sm font-semibold text-green-600">{market.som_tier}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between mt-2 text-xs text-gray-500">
+                    <span className="capitalize">{market.category.replace(/_/g, ' ')}</span>
+                    <span>Confidence: {(market.confidence * 100).toFixed(0)}%</span>
+                  </div>
                 </div>
               )}
             </div>

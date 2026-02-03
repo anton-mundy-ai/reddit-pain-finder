@@ -1,4 +1,4 @@
-// v7: Home page with embedding-based clustering
+// v11: Home page with embedding-based clustering + market sizing
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { fetchOpportunities, fetchStats } from '../api';
@@ -10,7 +10,7 @@ export default function HomePage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<'score' | 'mentions'>('mentions'); // v7: Default to mentions
+  const [sortBy, setSortBy] = useState<'score' | 'mentions' | 'market'>('mentions'); // v11: Added market sort
   const [showAll, setShowAll] = useState(false); // v7: Toggle for 5+ filter
 
   useEffect(() => {
@@ -18,7 +18,7 @@ export default function HomePage() {
       try {
         setLoading(true);
         const [oppData, statsData] = await Promise.all([
-          fetchOpportunities(100, 5, showAll),  // v7: Pass showAll flag
+          fetchOpportunities(100, 5, showAll, sortBy),  // v11: Pass sortBy for server-side market sort
           fetchStats()
         ]);
         setOpportunities(oppData.opportunities || []);
@@ -31,11 +31,17 @@ export default function HomePage() {
       }
     }
     load();
-  }, [showAll]); // Reload when filter changes
+  }, [showAll, sortBy]); // Reload when filter or sort changes
 
   const sortedOpportunities = [...opportunities].sort((a, b) => {
     if (sortBy === 'mentions') {
       return b.social_proof_count - a.social_proof_count;
+    }
+    if (sortBy === 'market') {
+      // Sort by TAM estimate (server already did this, but ensure client-side consistency)
+      const aMarket = a.market?.tam_estimate || 0;
+      const bMarket = b.market?.tam_estimate || 0;
+      return bMarket - aMarket;
     }
     return b.total_score - a.total_score;
   });
@@ -67,23 +73,31 @@ export default function HomePage() {
       <div className="flex items-center justify-between">
         <div className="text-center flex-1">
           <h1 className="text-3xl font-bold text-gray-900">
-            Reddit Pain Finder <span className="text-purple-600">v7</span>
+            Reddit Pain Finder <span className="text-purple-600">v11</span>
           </h1>
           <p className="text-gray-600">
-            Semantic clustering • Embedding-based similarity
+            Semantic clustering • Market sizing • Trend detection
           </p>
         </div>
-        <Link 
-          to="/topics" 
-          className="px-4 py-2 bg-purple-100 text-purple-700 rounded-lg font-medium hover:bg-purple-200 transition-colors"
-        >
-          📊 Explore Topics
-        </Link>
+        <div className="flex gap-2">
+          <Link 
+            to="/trends" 
+            className="px-4 py-2 bg-orange-100 text-orange-700 rounded-lg font-medium hover:bg-orange-200 transition-colors"
+          >
+            🔥 Trends
+          </Link>
+          <Link 
+            to="/topics" 
+            className="px-4 py-2 bg-purple-100 text-purple-700 rounded-lg font-medium hover:bg-purple-200 transition-colors"
+          >
+            📊 Topics
+          </Link>
+        </div>
       </div>
 
       {/* Stats Row */}
       {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-7 gap-3">
           <StatCard 
             label="Comments" 
             value={(stats.raw_comments + stats.hn_comments).toLocaleString()} 
@@ -93,12 +107,6 @@ export default function HomePage() {
             label="Pain Points" 
             value={stats.pain_records.toLocaleString()} 
             sublabel="extracted"
-          />
-          <StatCard 
-            label="Embeddings" 
-            value={(stats.embeddings || 0).toLocaleString()} 
-            sublabel="generated"
-            highlight
           />
           <StatCard 
             label="Clusters" 
@@ -116,36 +124,52 @@ export default function HomePage() {
             value={stats.products_generated.toLocaleString()} 
             sublabel="generated"
           />
+          <StatCard 
+            label="Market Sized" 
+            value={(stats.market_estimated || 0).toLocaleString()} 
+            sublabel={`${((stats.market_avg_confidence || 0) * 100).toFixed(0)}% avg conf`}
+            highlight
+          />
+          <StatCard 
+            label="🔥 Hot Trends" 
+            value={(stats.trends_hot || 0).toLocaleString()} 
+            sublabel={`of ${stats.trends_tracked || 0} tracked`}
+          />
         </div>
       )}
 
-      {/* v7: Pipeline explanation */}
+      {/* v11: Pipeline explanation */}
       <div className="bg-gradient-to-r from-purple-50 to-blue-50 rounded-xl p-4 border border-purple-100">
-        <div className="flex items-center gap-3 text-sm flex-wrap">
+        <div className="flex items-center gap-2 text-sm flex-wrap">
           <div className="flex items-center gap-1">
             <span className="font-semibold text-gray-700">1.</span>
-            <span className="text-gray-600">Nano filters</span>
+            <span className="text-gray-600">Filter</span>
           </div>
           <span className="text-gray-400">→</span>
           <div className="flex items-center gap-1">
             <span className="font-semibold text-gray-700">2.</span>
-            <span className="text-gray-600">GPT-5.2 tags</span>
+            <span className="text-gray-600">Tag</span>
           </div>
           <span className="text-gray-400">→</span>
-          <div className="flex items-center gap-1 text-purple-700">
-            <span className="font-semibold">3.</span>
-            <span className="font-medium">Embeddings</span>
-            <span className="text-xs bg-purple-200 px-1 rounded">NEW</span>
+          <div className="flex items-center gap-1">
+            <span className="font-semibold text-gray-700">3.</span>
+            <span className="text-gray-600">Cluster</span>
           </div>
           <span className="text-gray-400">→</span>
           <div className="flex items-center gap-1">
             <span className="font-semibold text-gray-700">4.</span>
-            <span className="text-gray-600">Semantic clustering</span>
+            <span className="text-gray-600">Synthesize</span>
           </div>
           <span className="text-gray-400">→</span>
-          <div className="flex items-center gap-1 text-green-700 font-medium">
+          <div className="flex items-center gap-1 text-purple-700">
             <span className="font-semibold">5.</span>
-            <span>5+ = Product</span>
+            <span className="font-medium">💰 Market Size</span>
+            <span className="text-xs bg-purple-200 px-1 rounded">NEW</span>
+          </div>
+          <span className="text-gray-400">→</span>
+          <div className="flex items-center gap-1 text-orange-700">
+            <span className="font-semibold">6.</span>
+            <span className="font-medium">🔥 Trends</span>
           </div>
         </div>
       </div>
@@ -174,10 +198,11 @@ export default function HomePage() {
           <span className="text-sm text-gray-500">Sort by:</span>
           <select 
             value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as 'score' | 'mentions')}
+            onChange={(e) => setSortBy(e.target.value as 'score' | 'mentions' | 'market')}
             className="text-sm border border-gray-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-purple-500"
           >
             <option value="mentions">Mentions (↓)</option>
+            <option value="market">💰 Market Size</option>
             <option value="score">Score</option>
           </select>
         </div>
@@ -189,9 +214,10 @@ export default function HomePage() {
           <div className="flex items-center gap-4 px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider">
             <div className="w-8 text-center">#</div>
             <div className="flex-1">Product / Topic</div>
+            <div className="w-16 text-center hidden md:block">Market</div>
             <div className="w-20 text-center">Mentions</div>
             <div className="w-16 text-center">Score</div>
-            <div className="hidden md:block w-[120px]">Personas</div>
+            <div className="hidden lg:block w-[120px]">Personas</div>
             <div className="w-5"></div>
           </div>
           

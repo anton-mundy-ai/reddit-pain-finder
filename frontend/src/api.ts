@@ -1,11 +1,17 @@
-// v10 API client - Embedding-based clustering + Competitor Mining + Trends
+// v11 API client - Embedding-based clustering + Competitor Mining + Trends + Market Sizing
 
 export const API_BASE = 'https://ideas.koda-software.com';
 
-export async function fetchOpportunities(limit: number = 50, minMentions: number = 5, showAll: boolean = false) {
+export async function fetchOpportunities(
+  limit: number = 50, 
+  minMentions: number = 5, 
+  showAll: boolean = false,
+  sortBy: 'mentions' | 'score' | 'market' = 'mentions'
+) {
   const params = new URLSearchParams({
     limit: String(limit),
-    min: String(minMentions)
+    min: String(minMentions),
+    sort: sortBy
   });
   if (showAll) params.set('all', 'true');
   
@@ -56,6 +62,20 @@ export async function fetchTrends(options: { status?: string; limit?: number; pe
 export async function fetchTrendHistory(topic: string, days: number = 90) {
   const res = await fetch(`${API_BASE}/api/trends/history/${encodeURIComponent(topic)}?days=${days}`);
   if (!res.ok) throw new Error('Failed to fetch trend history');
+  return res.json();
+}
+
+// v11: Fetch market estimates
+export async function fetchMarketEstimates(limit: number = 100, sortBy: 'tam' | 'som' | 'confidence' = 'tam') {
+  const res = await fetch(`${API_BASE}/api/market?limit=${limit}&sort=${sortBy}`);
+  if (!res.ok) throw new Error('Failed to fetch market estimates');
+  return res.json();
+}
+
+// v11: Fetch market estimate for a specific opportunity
+export async function fetchMarketEstimate(id: number) {
+  const res = await fetch(`${API_BASE}/api/market/${id}`);
+  if (!res.ok) throw new Error('Failed to fetch market estimate');
   return res.json();
 }
 

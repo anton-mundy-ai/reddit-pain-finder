@@ -1,4 +1,4 @@
-// v10: Types with embedding-based clustering + Trends
+// v11: Types with embedding-based clustering + Trends + Market Sizing
 
 export interface Quote {
   text: string;
@@ -7,6 +7,18 @@ export interface Quote {
   persona?: string;
   severity?: string;
   similarity?: number;  // v7: similarity score
+}
+
+// v11: Market sizing types
+export type MarketTier = '$1M' | '$10M' | '$100M' | '$1B' | '$10B+';
+
+export interface MarketEstimate {
+  tam_tier: MarketTier;
+  sam_tier: MarketTier;
+  som_tier: MarketTier;
+  tam_estimate: number;
+  confidence: number;
+  category: string;
 }
 
 // v10: Trend types
@@ -56,6 +68,7 @@ export interface Opportunity {
   severity_breakdown: Record<string, number>;
   avg_similarity?: number;     // v7: cluster cohesion
   updated_at: number;
+  market?: MarketEstimate | null;  // v11: market sizing
 }
 
 export interface OpportunityDetail extends Opportunity {
@@ -110,6 +123,10 @@ export interface Stats {
   trends_rising?: number;
   trends_cooling?: number;
   last_trend_snapshot?: string | null;
+  // v11: market sizing stats
+  market_estimated?: number;
+  market_by_tier?: Record<MarketTier, number>;
+  market_avg_confidence?: number;
   version: string;
   last_updated: number;
 }

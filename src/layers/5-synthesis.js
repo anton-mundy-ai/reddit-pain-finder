@@ -5,7 +5,7 @@
 
 import { generateOpportunityBrief } from '../utils/llm.js';
 
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 2;
 const MIN_CLUSTER_SIZE = 2; // At least 2 records to synthesize
 
 export async function runSynthesis(env) {

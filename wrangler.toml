@@ -1,7 +1,6 @@
 name = "reddit-pain-finder"
-main = "src/index.ts"
+main = "src/index.js"
 compatibility_date = "2024-01-01"
-compatibility_flags = ["nodejs_compat"]
 
 [triggers]
 crons = ["*/30 * * * *"]
@@ -14,11 +13,6 @@ database_id = "ed404205-31e1-4d19-ba4e-994a0e269112"
 [vars]
 ENVIRONMENT = "production"
 
-# Routes for custom domain
 [[routes]]
 pattern = "ideas.koda-software.com/*"
 zone_name = "koda-software.com"
-
-# Static assets for frontend
-[site]
-bucket = "./frontend/dist"

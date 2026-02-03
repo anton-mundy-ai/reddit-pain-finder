@@ -13,11 +13,10 @@ export async function callLLM(env, { messages, temperature = 0.3, maxTokens = 10
   }
   
   const body = {
-    model: 'gpt-5-nano',
+    model: 'gpt-4o-mini',
     messages,
     temperature,
-    // GPT-5 uses max_completion_tokens instead of max_tokens
-    max_completion_tokens: maxTokens,
+    max_tokens: maxTokens,
   };
   
   if (jsonMode) {

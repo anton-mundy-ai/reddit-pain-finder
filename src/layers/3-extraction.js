@@ -6,7 +6,7 @@
 import { extractPainRecord } from '../utils/llm.js';
 import { hasAustralianContext } from '../utils/reddit.js';
 
-const BATCH_SIZE = 15;
+const BATCH_SIZE = 3;
 
 export async function runExtraction(env) {
   const stats = { extracted: 0 };

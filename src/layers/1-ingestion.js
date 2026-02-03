@@ -1,6 +1,7 @@
 /**
  * Layer 1: Ingestion
  * Fetches posts and comments from Reddit
+ * Processes 3 subreddits per run to stay within Worker CPU limits
  */
 
 import { fetchSubredditPosts, fetchPostComments, isRelevantContent } from '../utils/reddit.js';
@@ -23,13 +24,33 @@ const SUBREDDITS = [
   'ranching',
 ];
 
-const POSTS_PER_SUBREDDIT = 15;
-const COMMENTS_PER_POST = 20;
+const POSTS_PER_SUBREDDIT = 10;
+const MAX_COMMENTS_PER_RUN = 20;
+const SUBREDDITS_PER_RUN = 3;
 
 export async function runIngestion(env) {
   const stats = { posts: 0, comments: 0 };
   
-  for (const subreddit of SUBREDDITS) {
+  // Get current rotation index from DB
+  let rotationIndex = 0;
+  try {
+    const state = await env.DB.prepare(
+      "SELECT MAX(run_at) as last_run, COUNT(*) as total_runs FROM ingestion_stats"
+    ).first();
+    rotationIndex = (state?.total_runs || 0) % Math.ceil(SUBREDDITS.length / SUBREDDITS_PER_RUN);
+  } catch (e) {
+    // Start fresh
+  }
+  
+  // Select subreddits for this run
+  const startIdx = rotationIndex * SUBREDDITS_PER_RUN;
+  const subredditsThisRun = SUBREDDITS.slice(startIdx, startIdx + SUBREDDITS_PER_RUN);
+  
+  console.log(`Ingesting subreddits ${startIdx} to ${startIdx + subredditsThisRun.length}: ${subredditsThisRun.join(', ')}`);
+  
+  let commentsFetched = 0;
+  
+  for (const subreddit of subredditsThisRun) {
     try {
       // Fetch recent posts
       const { posts } = await fetchSubredditPosts(subreddit, {
@@ -63,13 +84,16 @@ export async function runIngestion(env) {
           
           stats.posts++;
           
-          // Fetch comments for posts with discussion
-          if (post.num_comments > 3 && isRelevantContent(post.title + ' ' + post.body)) {
+          // Fetch comments for posts with discussion (limit total comments per run)
+          if (commentsFetched < MAX_COMMENTS_PER_RUN && 
+              post.num_comments > 3 && 
+              isRelevantContent(post.title + ' ' + post.body)) {
+            
             const comments = await fetchPostComments(subreddit, post.id, {
-              limit: COMMENTS_PER_POST,
+              limit: 10,
             });
             
-            for (const comment of comments) {
+            for (const comment of comments.slice(0, 5)) {
               if (isRelevantContent(comment.body)) {
                 const existingComment = await env.DB.prepare(
                   'SELECT id FROM raw_comments WHERE id = ?'
@@ -90,6 +114,7 @@ export async function runIngestion(env) {
                   ).run();
                   
                   stats.comments++;
+                  commentsFetched++;
                 }
               }
             }
@@ -104,8 +129,8 @@ export async function runIngestion(env) {
   // Log stats
   await env.DB.prepare(`
     INSERT INTO ingestion_stats (subreddit, posts_fetched, comments_fetched)
-    VALUES ('all', ?, ?)
-  `).bind(stats.posts, stats.comments).run();
+    VALUES (?, ?, ?)
+  `).bind(subredditsThisRun.join(','), stats.posts, stats.comments).run();
   
   return stats;
 }

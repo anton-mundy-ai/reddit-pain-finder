@@ -6,7 +6,7 @@
 import { classifyContent } from '../utils/llm.js';
 import { isLikelyEnglish, hasAustralianContext } from '../utils/reddit.js';
 
-const BATCH_SIZE = 20;
+const BATCH_SIZE = 5;
 const MIN_CONTENT_LENGTH = 100;
 
 export async function runFiltering(env) {

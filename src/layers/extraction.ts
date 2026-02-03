@@ -4,7 +4,7 @@ import { Env, PainRecord, ExtractionResponse, RawPost, RawComment } from '../typ
 import { callGPT4oMini } from '../utils/openai';
 import { getUnextractedPainPoints } from './classification';
 
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 5;
 
 const EXTRACTION_PROMPT = `Extract structured information from this Reddit pain point.
 

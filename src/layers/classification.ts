@@ -3,7 +3,7 @@
 import { Env, Classification, ClassificationResponse, RawPost, RawComment } from '../types';
 import { callGPT4oMini } from '../utils/openai';
 
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 5;
 
 const CLASSIFICATION_PROMPT = `You are an expert at identifying pain points in online discussions. Analyze the following content from Reddit and classify it.
 

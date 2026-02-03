@@ -1,6 +1,9 @@
 /**
  * Reddit Pain Point Finder v2
  * 6-layer analysis pipeline
+ * 
+ * Architecture: Each cron/trigger runs ONE layer to stay within CPU limits.
+ * State machine tracks which layer to run next.
  */
 
 import { handleAPIRequest } from './api/router.js';
@@ -32,10 +35,35 @@ export default {
       return handleAPIRequest(request, env, ctx);
     }
     
-    // Manual trigger endpoints (for testing)
+    // Manual trigger for specific layer
     if (url.pathname === '/trigger/ingest' && request.method === 'POST') {
-      ctx.waitUntil(runFullPipeline(env));
-      return jsonResponse({ status: 'Pipeline triggered' });
+      ctx.waitUntil(runIngestion(env));
+      return jsonResponse({ status: 'Ingestion triggered' });
+    }
+    
+    if (url.pathname === '/trigger/filter' && request.method === 'POST') {
+      ctx.waitUntil(runFiltering(env));
+      return jsonResponse({ status: 'Filtering triggered' });
+    }
+    
+    if (url.pathname === '/trigger/extract' && request.method === 'POST') {
+      ctx.waitUntil(runExtraction(env));
+      return jsonResponse({ status: 'Extraction triggered' });
+    }
+    
+    if (url.pathname === '/trigger/cluster' && request.method === 'POST') {
+      ctx.waitUntil(runClustering(env));
+      return jsonResponse({ status: 'Clustering triggered' });
+    }
+    
+    if (url.pathname === '/trigger/synthesize' && request.method === 'POST') {
+      ctx.waitUntil(runSynthesis(env));
+      return jsonResponse({ status: 'Synthesis triggered' });
+    }
+    
+    if (url.pathname === '/trigger/score' && request.method === 'POST') {
+      ctx.waitUntil(runScoring(env));
+      return jsonResponse({ status: 'Scoring triggered' });
     }
     
     // Serve static frontend
@@ -43,113 +71,39 @@ export default {
   },
 
   // Cron trigger - runs every 30 minutes
+  // Rotates through layers: ingest -> filter -> extract -> cluster -> synthesize -> score
   async scheduled(event, env, ctx) {
-    console.log('Cron triggered:', new Date().toISOString());
-    ctx.waitUntil(runFullPipeline(env));
+    const minute = new Date().getMinutes();
+    const layerIndex = Math.floor(minute / 5) % 6; // Changes every 5 minutes
+    
+    const layers = [
+      { name: 'ingestion', fn: runIngestion },
+      { name: 'filtering', fn: runFiltering },
+      { name: 'extraction', fn: runExtraction },
+      { name: 'clustering', fn: runClustering },
+      { name: 'synthesis', fn: runSynthesis },
+      { name: 'scoring', fn: runScoring },
+    ];
+    
+    const layer = layers[layerIndex];
+    console.log(`Cron running layer ${layerIndex + 1}: ${layer.name}`);
+    
+    try {
+      const result = await layer.fn(env);
+      console.log(`Layer ${layer.name} completed:`, result);
+    } catch (error) {
+      console.error(`Layer ${layer.name} failed:`, error);
+    }
   },
 };
 
 /**
- * Run the full 6-layer pipeline
- */
-async function runFullPipeline(env) {
-  const startTime = Date.now();
-  const stats = {
-    layer1: { posts: 0, comments: 0 },
-    layer2: { processed: 0, passed: 0 },
-    layer3: { extracted: 0 },
-    layer4: { clustered: 0, newClusters: 0 },
-    layer5: { synthesized: 0 },
-    layer6: { scored: 0 },
-  };
-
-  try {
-    console.log('=== Starting Pipeline ===');
-    
-    // Layer 1: Ingestion
-    console.log('Layer 1: Ingestion...');
-    const ingestionResult = await runIngestion(env);
-    stats.layer1 = ingestionResult;
-    console.log(`  Fetched ${ingestionResult.posts} posts, ${ingestionResult.comments} comments`);
-    
-    // Layer 2: Filtering
-    console.log('Layer 2: Filtering...');
-    const filterResult = await runFiltering(env);
-    stats.layer2 = filterResult;
-    console.log(`  Processed ${filterResult.processed}, passed ${filterResult.passed}`);
-    
-    // Layer 3: Extraction
-    console.log('Layer 3: Extraction...');
-    const extractResult = await runExtraction(env);
-    stats.layer3 = extractResult;
-    console.log(`  Extracted ${extractResult.extracted} pain records`);
-    
-    // Layer 4: Clustering
-    console.log('Layer 4: Clustering...');
-    const clusterResult = await runClustering(env);
-    stats.layer4 = clusterResult;
-    console.log(`  Clustered ${clusterResult.clustered}, new clusters: ${clusterResult.newClusters}`);
-    
-    // Layer 5: Synthesis
-    console.log('Layer 5: Synthesis...');
-    const synthResult = await runSynthesis(env);
-    stats.layer5 = synthResult;
-    console.log(`  Synthesized ${synthResult.synthesized} briefs`);
-    
-    // Layer 6: Scoring
-    console.log('Layer 6: Scoring...');
-    const scoreResult = await runScoring(env);
-    stats.layer6 = scoreResult;
-    console.log(`  Scored ${scoreResult.scored} clusters`);
-    
-    const duration = Date.now() - startTime;
-    console.log(`=== Pipeline Complete (${duration}ms) ===`);
-    
-    return { success: true, stats, duration };
-  } catch (error) {
-    console.error('Pipeline error:', error);
-    return { success: false, error: error.message, stats };
-  }
-}
-
-/**
- * Serve static files from frontend/dist
+ * Serve static files (inline HTML fallback)
  */
 async function serveStatic(request, env) {
-  const url = new URL(request.url);
-  let path = url.pathname;
-  
-  // Default to index.html
-  if (path === '/' || path === '') {
-    path = '/index.html';
-  }
-  
-  try {
-    // Try to get from KV (site bucket)
-    const asset = await env.__STATIC_CONTENT.get(path.slice(1));
-    if (asset) {
-      const contentType = getContentType(path);
-      return new Response(asset, {
-        headers: { 'Content-Type': contentType },
-      });
-    }
-  } catch (e) {
-    // Fallback to inline HTML if static content not available
-  }
-  
-  // Return inline dashboard HTML as fallback
   return new Response(getDashboardHTML(), {
     headers: { 'Content-Type': 'text/html' },
   });
-}
-
-function getContentType(path) {
-  if (path.endsWith('.html')) return 'text/html';
-  if (path.endsWith('.css')) return 'text/css';
-  if (path.endsWith('.js')) return 'application/javascript';
-  if (path.endsWith('.json')) return 'application/json';
-  if (path.endsWith('.svg')) return 'image/svg+xml';
-  return 'text/plain';
 }
 
 function jsonResponse(data, status = 200) {
@@ -377,6 +331,25 @@ function getDashboardHTML() {
       padding: 4rem;
       color: var(--text-dim);
     }
+    .pipeline-status {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .pipeline-layers {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-top: 0.5rem;
+    }
+    .layer-badge {
+      padding: 0.25rem 0.5rem;
+      background: var(--surface-2);
+      border-radius: 0.25rem;
+      font-size: 0.75rem;
+    }
     @media (max-width: 768px) {
       .container { padding: 1rem; }
       header { flex-direction: column; gap: 1rem; text-align: center; }
@@ -390,11 +363,24 @@ function getDashboardHTML() {
       <div class="refresh-info" id="refresh-info"></div>
     </header>
     
+    <div class="pipeline-status">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span>Pipeline Status</span>
+        <span id="pipeline-status" style="color: var(--success);">●  Running (cron every 30min)</span>
+      </div>
+      <div class="pipeline-layers">
+        <span class="layer-badge">1️⃣ Ingest</span>
+        <span class="layer-badge">2️⃣ Filter</span>
+        <span class="layer-badge">3️⃣ Extract</span>
+        <span class="layer-badge">4️⃣ Cluster</span>
+        <span class="layer-badge">5️⃣ Synthesize</span>
+        <span class="layer-badge">6️⃣ Score</span>
+      </div>
+    </div>
+    
     <div class="filters">
       <button class="filter-btn active" data-filter="all">All</button>
       <button class="filter-btn au" data-filter="au">🇦🇺 Australia Focus</button>
-      <button class="filter-btn" data-filter="business">Business</button>
-      <button class="filter-btn" data-filter="consumer">Consumer</button>
       <button class="filter-btn" data-filter="high-score">High Score (80+)</button>
     </div>
     
@@ -445,7 +431,7 @@ function getDashboardHTML() {
           'Last updated: ' + new Date().toLocaleTimeString();
       } catch (e) {
         document.getElementById('opportunities').innerHTML = 
-          '<div class="empty">Failed to load data. Pipeline may still be initializing.</div>';
+          '<div class="empty">⏳ Pipeline is warming up. Data will appear after a few cron cycles (~2 hours for full pipeline).</div>';
       }
     }
     
@@ -460,14 +446,14 @@ function getDashboardHTML() {
       const container = document.getElementById('opportunities');
       
       if (!opps.length) {
-        container.innerHTML = '<div class="empty">No opportunities found yet. Data is being collected and analyzed.</div>';
+        container.innerHTML = '<div class="empty">📊 No opportunities yet. The pipeline runs every 30 minutes, processing one layer at a time.<br><br>Data will appear once enough pain points are collected, clustered, and scored.</div>';
         return;
       }
       
       container.innerHTML = opps.map(opp => \`
         <div class="opportunity-card" onclick="showDetail(\${opp.cluster_id})">
           <div class="opportunity-header">
-            <h3>\${escapeHtml(opp.summary?.slice(0, 100) || 'Untitled Opportunity')}...</h3>
+            <h3>\${escapeHtml((opp.summary || 'Untitled Opportunity').slice(0, 100))}...</h3>
             <div class="opportunity-score">
               <span>⚡</span>
               <span>\${Math.round(opp.total_score || 0)}</span>
@@ -477,7 +463,7 @@ function getDashboardHTML() {
           <div class="opportunity-meta">
             <span class="meta-item">👥 \${opp.member_count || 0} mentions</span>
             <span class="meta-item">📊 \${(opp.subreddits || []).slice(0, 3).join(', ')}</span>
-            \${opp.au_fit_score > 50 ? '<span class="au-badge">AU</span>' : ''}
+            \${(opp.au_fit_score || 0) > 50 ? '<span class="au-badge">AU</span>' : ''}
           </div>
         </div>
       \`).join('');
@@ -512,28 +498,28 @@ function getDashboardHTML() {
           
           <div class="section">
             <div class="section-title">Top Quotes</div>
-            \${quotes.map(q => \`
+            \${quotes.length ? quotes.map(q => \`
               <div class="quote">
-                <div class="quote-text">"\${escapeHtml(q.quote)}"</div>
+                <div class="quote-text">"\${escapeHtml(q.quote || q)}"</div>
                 <div class="quote-source">
                   — \${q.author || 'anonymous'} 
-                  <a href="\${q.url}" target="_blank">View on Reddit →</a>
+                  \${q.url ? '<a href="' + q.url + '" target="_blank">View on Reddit →</a>' : ''}
                 </div>
               </div>
-            \`).join('')}
+            \`).join('') : '<p style="color: var(--text-dim)">No quotes available</p>'}
           </div>
           
           <div class="section">
             <div class="section-title">Personas Affected</div>
             <div class="tags">
-              \${personas.map(p => '<span class="tag">' + escapeHtml(p) + '</span>').join('')}
+              \${personas.length ? personas.map(p => '<span class="tag">' + escapeHtml(p) + '</span>').join('') : '<span style="color: var(--text-dim)">Not yet analyzed</span>'}
             </div>
           </div>
           
           <div class="section">
             <div class="section-title">Current Workarounds</div>
             <div class="tags">
-              \${workarounds.map(w => '<span class="tag">' + escapeHtml(w) + '</span>').join('')}
+              \${workarounds.length ? workarounds.map(w => '<span class="tag">' + escapeHtml(w) + '</span>').join('') : '<span style="color: var(--text-dim)">Not yet analyzed</span>'}
             </div>
           </div>
         \`;
@@ -565,7 +551,7 @@ function getDashboardHTML() {
     
     function escapeHtml(str) {
       if (!str) return '';
-      return str.replace(/[&<>"']/g, c => ({
+      return String(str).replace(/[&<>"']/g, c => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
       }[c]));
     }
@@ -587,12 +573,6 @@ function getDashboardHTML() {
         case 'au':
           filtered = allOpportunities.filter(o => (o.au_fit_score || 0) > 50);
           break;
-        case 'business':
-          filtered = allOpportunities.filter(o => o.category === 'business');
-          break;
-        case 'consumer':
-          filtered = allOpportunities.filter(o => o.category === 'consumer');
-          break;
         case 'high-score':
           filtered = allOpportunities.filter(o => (o.total_score || 0) >= 80);
           break;
@@ -609,8 +589,8 @@ function getDashboardHTML() {
     // Initial load
     loadData();
     
-    // Auto-refresh every 5 minutes
-    setInterval(loadData, 300000);
+    // Auto-refresh every 2 minutes
+    setInterval(loadData, 120000);
   </script>
 </body>
 </html>`;

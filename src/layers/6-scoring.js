@@ -6,7 +6,7 @@
 import { scoreCluster } from '../utils/llm.js';
 import { hasAustralianContext } from '../utils/reddit.js';
 
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 2;
 
 export async function runScoring(env) {
   const stats = { scored: 0 };

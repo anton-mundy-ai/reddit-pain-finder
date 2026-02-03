@@ -5,7 +5,7 @@
  */
 
 const SIMILARITY_THRESHOLD = 0.70;
-const BATCH_SIZE = 15;
+const BATCH_SIZE = 5;
 
 export async function runClustering(env) {
   const stats = { clustered: 0, newClusters: 0 };

@@ -1,6 +1,7 @@
 import { Opportunity, OpportunityDetail, PainRecord, Stats } from './types';
 
-const API_BASE = import.meta.env.PROD ? '' : '';
+// @ts-ignore
+const API_BASE = typeof import.meta !== 'undefined' && import.meta.env?.PROD ? '' : '';
 
 export async function fetchOpportunities(params?: {
   limit?: number;

@@ -11,10 +11,6 @@ binding = "DB"
 database_name = "reddit-pain-finder"
 database_id = "ed404205-31e1-4d19-ba4e-994a0e269112"
 
-[[vectorize]]
-binding = "VECTORIZE"
-index_name = "pain-embeddings"
-
 [vars]
 ENVIRONMENT = "production"
 

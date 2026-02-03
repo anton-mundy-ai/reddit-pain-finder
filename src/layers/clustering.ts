@@ -1,67 +1,69 @@
-// Layer 4: Clustering - Group similar pain points using embeddings
+// Layer 4: Clustering - Group similar pain points using LLM-based similarity
 
 import { Env, PainRecord, PainCluster } from '../types';
-import { createEmbedding } from '../utils/openai';
+import { callGPT4oMini } from '../utils/openai';
 import { getUnclusteredRecords } from './extraction';
 
-const SIMILARITY_THRESHOLD = 0.78;
-const BATCH_SIZE = 20;
+const BATCH_SIZE = 15;
 
-interface VectorMatch {
-  id: string;
-  score: number;
-  metadata?: { cluster_id?: number; problem_text?: string };
+// Use LLM to find best matching cluster or suggest new one
+const CLUSTERING_PROMPT = `Given a new pain point and existing cluster summaries, determine the best match.
+
+Return JSON:
+{
+  "best_cluster_id": number or null,
+  "confidence": 0-1,
+  "reasoning": "brief"
 }
 
-async function getOrCreateCluster(env: Env, record: PainRecord, embedding: number[]): Promise<number> {
-  const db = env.DB;
-  const vectorize = env.VECTORIZE;
-  
-  let matches: VectorMatch[] = [];
+If no cluster matches well (confidence < 0.6), return best_cluster_id: null to create a new cluster.
+Match based on: same problem domain, similar personas, similar context/industry.`;
+
+async function findBestCluster(
+  apiKey: string,
+  problemText: string,
+  existingClusters: { id: number; centroid_text: string }[]
+): Promise<{ clusterId: number | null; confidence: number }> {
+  if (existingClusters.length === 0) {
+    return { clusterId: null, confidence: 0 };
+  }
+
+  const clusterList = existingClusters.slice(0, 20).map(c => 
+    `[${c.id}]: ${c.centroid_text.slice(0, 150)}`
+  ).join('\n');
+
+  const prompt = `New pain point: "${problemText.slice(0, 300)}"
+
+Existing clusters:
+${clusterList}
+
+Find the best matching cluster or return null if no good match.`;
+
   try {
-    const queryResult = await vectorize.query(embedding, { topK: 5, returnMetadata: true });
-    matches = (queryResult.matches || []) as VectorMatch[];
-  } catch (error) {
-    console.log('Vectorize query failed:', error);
-  }
-  
-  let bestMatch: VectorMatch | null = null;
-  for (const match of matches) {
-    if (match.score >= SIMILARITY_THRESHOLD && match.metadata?.cluster_id) {
-      if (!bestMatch || match.score > bestMatch.score) bestMatch = match;
+    const { content } = await callGPT4oMini(apiKey,
+      [{ role: 'system', content: CLUSTERING_PROMPT }, { role: 'user', content: prompt }],
+      { temperature: 0.1, max_tokens: 100, json_mode: true }
+    );
+    const result = JSON.parse(content);
+    if (result.best_cluster_id && result.confidence >= 0.6) {
+      return { clusterId: result.best_cluster_id, confidence: result.confidence };
     }
+    return { clusterId: null, confidence: result.confidence || 0 };
+  } catch (error) {
+    console.error('Clustering LLM error:', error);
+    return { clusterId: null, confidence: 0 };
   }
-  
-  if (bestMatch?.metadata?.cluster_id) {
-    const clusterId = bestMatch.metadata.cluster_id;
-    await db.prepare(`UPDATE pain_clusters SET member_count = member_count + 1, updated_at = ? WHERE id = ?`)
-      .bind(Math.floor(Date.now() / 1000), clusterId).run();
-    return clusterId;
-  }
-  
-  // Create new cluster
+}
+
+async function createCluster(db: D1Database, record: PainRecord): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
   await db.prepare(`
     INSERT INTO pain_clusters (centroid_text, embedding_id, member_count, unique_authors, subreddit_count, avg_severity, avg_w2p, created_at, updated_at)
     VALUES (?, ?, 1, 1, 1, ?, ?, ?, ?)
-  `).bind(record.problem_text, `cluster_${now}_${Math.random().toString(36).slice(2, 8)}`,
-    record.severity_score, record.w2p_score, now, now).run();
+  `).bind(record.problem_text, `cluster_${now}`, record.severity_score, record.w2p_score, now, now).run();
   
-  const idResult = await db.prepare("SELECT id FROM pain_clusters ORDER BY id DESC LIMIT 1")
-    .first() as { id: number } | null;
-  const clusterId = idResult?.id || 0;
-  
-  try {
-    await vectorize.upsert([{
-      id: `pain_${record.id}_${now}`,
-      values: embedding,
-      metadata: { cluster_id: clusterId, problem_text: record.problem_text.slice(0, 200), subreddit: record.subreddit }
-    }]);
-  } catch (error) {
-    console.error('Failed to upsert to Vectorize:', error);
-  }
-  
-  return clusterId;
+  const idResult = await db.prepare("SELECT id FROM pain_clusters ORDER BY id DESC LIMIT 1").first() as { id: number } | null;
+  return idResult?.id || 0;
 }
 
 async function addToClusterMembers(db: D1Database, clusterId: number, recordId: number, similarity: number): Promise<void> {
@@ -90,9 +92,10 @@ export async function runClustering(env: Env): Promise<{
   const db = env.DB;
   let clustered = 0, newClusters = 0, existingUpdated = 0;
   
-  const existingClusterIds = new Set<number>();
-  const clusterResult = await db.prepare("SELECT id FROM pain_clusters").all() as D1Result<{ id: number }>;
-  for (const c of clusterResult.results || []) existingClusterIds.add(c.id);
+  // Get existing clusters
+  const existingClusters = await db.prepare("SELECT id, centroid_text FROM pain_clusters ORDER BY member_count DESC LIMIT 50")
+    .all() as D1Result<{ id: number; centroid_text: string }>;
+  const clusterList = existingClusters.results || [];
   
   const records = await getUnclusteredRecords(db, BATCH_SIZE);
   
@@ -100,17 +103,23 @@ export async function runClustering(env: Env): Promise<{
     if (!record.id || !record.problem_text) continue;
     
     try {
-      const embedding = await createEmbedding(env.OPENAI_API_KEY, record.problem_text);
-      if (embedding.length === 0) continue;
+      const { clusterId, confidence } = await findBestCluster(env.OPENAI_API_KEY, record.problem_text, clusterList);
       
-      const clusterId = await getOrCreateCluster(env, record, embedding);
+      let finalClusterId: number;
+      if (clusterId) {
+        finalClusterId = clusterId;
+        await db.prepare("UPDATE pain_clusters SET member_count = member_count + 1, updated_at = ? WHERE id = ?")
+          .bind(Math.floor(Date.now() / 1000), clusterId).run();
+        existingUpdated++;
+      } else {
+        finalClusterId = await createCluster(db, record);
+        clusterList.push({ id: finalClusterId, centroid_text: record.problem_text });
+        newClusters++;
+      }
       
-      await db.prepare("UPDATE pain_records SET cluster_id = ? WHERE id = ?").bind(clusterId, record.id).run();
-      await addToClusterMembers(db, clusterId, record.id, 1.0);
-      await updateClusterStats(db, clusterId);
-      
-      if (existingClusterIds.has(clusterId)) existingUpdated++;
-      else { newClusters++; existingClusterIds.add(clusterId); }
+      await db.prepare("UPDATE pain_records SET cluster_id = ? WHERE id = ?").bind(finalClusterId, record.id).run();
+      await addToClusterMembers(db, finalClusterId, record.id, confidence);
+      await updateClusterStats(db, finalClusterId);
       
       clustered++;
     } catch (error) {

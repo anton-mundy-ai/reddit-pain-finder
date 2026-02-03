@@ -1,163 +1,234 @@
-// Layer 3: Clustering with SOCIAL PROOF tracking
-// v5: Track cluster size, smart re-synthesis trigger
+// Layer 4: EMBEDDING-BASED Clustering v7
+// Uses semantic similarity via text-embedding-3-small
+// Clusters pain points by meaning, not just topic strings
 
 import { Env, PainRecord, PainCluster } from '../types';
-import { callGPT5Nano } from '../utils/openai';
+import { 
+  generateEmbedding, 
+  storeEmbedding, 
+  findSimilarRecords,
+  cosineSimilarity,
+  getAllEmbeddings 
+} from '../utils/embeddings';
+import { 
+  normalizeTopic, 
+  extractBroadCategory,
+  topicsMatch 
+} from '../utils/normalize';
 import { getUnclusteredRecords } from './extraction';
 
-const BATCH_SIZE = 30;  // More aggressive batching
-const SIMILARITY_THRESHOLD = 0.65;  // Slightly lower for more aggressive clustering
+const SIMILARITY_THRESHOLD = 0.65;  // v8: Higher threshold for quality clusters
+const MIN_CLUSTER_SIZE = 3;         // Minimum records to form a real cluster
 
-// v5: Use nano for clustering decisions (fast)
-const CLUSTERING_PROMPT = `Match this pain point to the best existing cluster, or suggest creating a new one.
-
-NEW PAIN POINT:
-"""
-{QUOTE}
-"""
-Subreddit: r/{SUBREDDIT}
-
-EXISTING CLUSTERS (ID: description):
-{CLUSTERS}
-
-Rules:
-- Match if the CORE PROBLEM is the same (could be solved by same product)
-- Don't match just because same industry
-- Match across industries if same frustration
-
-Respond in JSON:
-{
-  "match_id": number or null,
-  "similarity": 0.0-1.0,
-  "new_description": "if creating new, 1-sentence problem description"
-}`;
-
-interface ClusteringResult {
-  match_id: number | null;
-  similarity: number;
-  new_description: string;
-}
-
-interface ExistingCluster {
-  id: number;
-  centroid_text: string | null;
-  social_proof_count: number;
-}
-
-async function findBestCluster(
+/**
+ * Get or create a cluster for semantically similar pain points
+ */
+async function getOrCreateSemanticCluster(
+  db: D1Database,
   apiKey: string,
-  quote: string,
-  subreddit: string,
-  existingClusters: ExistingCluster[]
-): Promise<ClusteringResult> {
-  if (existingClusters.length === 0) {
-    return {
-      match_id: null,
-      similarity: 0,
-      new_description: quote.slice(0, 200)
-    };
-  }
-
-  // Format clusters (top 40 by social proof for context window)
-  const clusterList = existingClusters
-    .sort((a, b) => b.social_proof_count - a.social_proof_count)
-    .slice(0, 40)
-    .map(c => `${c.id}: ${c.centroid_text || '(no description)'}`)
-    .join('\n');
-
-  const prompt = CLUSTERING_PROMPT
-    .replace('{QUOTE}', quote.slice(0, 500))
-    .replace('{SUBREDDIT}', subreddit)
-    .replace('{CLUSTERS}', clusterList);
-
-  try {
-    const { content } = await callGPT5Nano(apiKey,
-      [{ role: 'user', content: prompt }],
-      { max_completion_tokens: 100, json_mode: true }
-    );
-    return JSON.parse(content) as ClusteringResult;
-  } catch (error) {
-    console.error('Clustering error:', error);
-    return {
-      match_id: null,
-      similarity: 0,
-      new_description: quote.slice(0, 200)
-    };
-  }
-}
-
-async function createCluster(db: D1Database, centroidText: string): Promise<number> {
+  record: PainRecord,
+  embedding: number[]
+): Promise<{ clusterId: number; similarity: number }> {
   const now = Math.floor(Date.now() / 1000);
   
+  // Parse the record's topics
+  let topics: string[] = [];
+  try {
+    topics = record.topics ? JSON.parse(record.topics) : [];
+  } catch {}
+  
+  const primaryTopic = topics[0] || 'general';
+  const normalizedTopic = normalizeTopic(primaryTopic);
+  const broadCategory = extractBroadCategory(primaryTopic);
+  
+  // Find similar existing records
+  const similar = await findSimilarRecords(
+    db, 
+    embedding, 
+    record.id || 0, 
+    10,
+    SIMILARITY_THRESHOLD
+  );
+  
+  // Filter to same broad category for tighter clusters
+  const relevantSimilar = similar.filter(s => {
+    if (!s.normalized_topic) return true;
+    const sCategory = extractBroadCategory(s.normalized_topic);
+    return sCategory === broadCategory || sCategory === 'general' || broadCategory === 'general';
+  });
+  
+  // Check if any similar record has a cluster
+  for (const sim of relevantSimilar) {
+    if (sim.cluster_id && sim.similarity >= SIMILARITY_THRESHOLD) {
+      // Join existing cluster
+      console.log(`  → Joining cluster ${sim.cluster_id} (similarity: ${sim.similarity.toFixed(3)})`);
+      return { clusterId: sim.cluster_id, similarity: sim.similarity };
+    }
+  }
+  
+  // No suitable cluster found - create new one
   await db.prepare(`
     INSERT INTO pain_clusters (
-      centroid_text, social_proof_count, last_synth_count, version,
+      topic, topic_canonical, broad_category, centroid_text, 
+      social_proof_count, last_synth_count, version,
       member_count, unique_authors, subreddit_count, total_upvotes,
       created_at, updated_at
-    ) VALUES (?, 0, 0, 1, 0, 0, 0, 0, ?, ?)
-  `).bind(centroidText, now, now).run();
+    ) VALUES (?, ?, ?, ?, 0, 0, 1, 0, 0, 0, 0, ?, ?)
+  `).bind(
+    primaryTopic,
+    normalizedTopic,
+    broadCategory,
+    `Pain points about: ${normalizedTopic}`,
+    now,
+    now
+  ).run();
   
-  const idResult = await db.prepare(
-    "SELECT id FROM pain_clusters ORDER BY id DESC LIMIT 1"
-  ).first() as { id: number } | null;
+  const newCluster = await db.prepare(
+    "SELECT id FROM pain_clusters WHERE topic_canonical = ? ORDER BY created_at DESC LIMIT 1"
+  ).bind(normalizedTopic).first() as { id: number } | null;
   
-  return idResult?.id || 0;
+  const clusterId = newCluster?.id || 0;
+  console.log(`  → Created new cluster ${clusterId} for "${normalizedTopic}"`);
+  
+  return { clusterId, similarity: 1.0 };
 }
 
+/**
+ * Add a pain record to a cluster
+ */
 async function addToCluster(
   db: D1Database, 
   clusterId: number, 
-  recordId: number, 
+  recordId: number,
   similarity: number
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   
   // Add to cluster_members
   await db.prepare(`
-    INSERT OR IGNORE INTO cluster_members (cluster_id, pain_record_id, similarity_score, added_at)
+    INSERT OR REPLACE INTO cluster_members (cluster_id, pain_record_id, similarity_score, added_at)
     VALUES (?, ?, ?, ?)
   `).bind(clusterId, recordId, similarity, now).run();
   
-  // Update pain_record with cluster assignment
+  // Update pain_record
   await db.prepare(`
     UPDATE pain_records SET cluster_id = ?, cluster_similarity = ? WHERE id = ?
   `).bind(clusterId, similarity, recordId).run();
 }
 
 /**
- * v5: Update cluster stats including SOCIAL PROOF COUNT
+ * Deduplicate similar personas (e.g., "australian_voter" and "australian_citizen" → just "australian_voter")
  */
-async function updateClusterStats(db: D1Database, clusterId: number): Promise<void> {
+function deduplicatePersonas(personas: string[], maxPersonas: number = 5): string[] {
+  if (personas.length <= 1) return personas;
+  
+  // Normalize and group similar personas
+  const normalized = personas.map(p => ({
+    original: p,
+    words: new Set(p.toLowerCase().split('_').filter(w => w.length > 2))
+  }));
+  
+  const deduplicated: string[] = [];
+  const used = new Set<number>();
+  
+  for (let i = 0; i < normalized.length; i++) {
+    if (used.has(i)) continue;
+    
+    // Find best (shortest) persona in this similarity group
+    let bestIdx = i;
+    let bestLen = normalized[i].original.length;
+    
+    for (let j = i + 1; j < normalized.length; j++) {
+      if (used.has(j)) continue;
+      
+      // Check word overlap
+      const overlap = [...normalized[i].words].filter(w => normalized[j].words.has(w)).length;
+      const minWords = Math.min(normalized[i].words.size, normalized[j].words.size);
+      
+      // If >50% overlap, consider them similar
+      if (minWords > 0 && overlap / minWords >= 0.5) {
+        used.add(j);
+        if (normalized[j].original.length < bestLen) {
+          bestIdx = j;
+          bestLen = normalized[j].original.length;
+        }
+      }
+    }
+    
+    deduplicated.push(normalized[bestIdx].original);
+    used.add(i);
+    
+    if (deduplicated.length >= maxPersonas) break;
+  }
+  
+  return deduplicated;
+}
+
+/**
+ * Update cluster stats after membership changes
+ */
+export async function updateClusterStats(db: D1Database, clusterId: number): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   
-  // Get all members for this cluster
+  // Get all member data
   const members = await db.prepare(`
-    SELECT pr.author, pr.subreddit, pr.source_score, pr.raw_quote
+    SELECT pr.author, pr.subreddit, pr.source_score, pr.raw_quote, pr.persona, pr.severity, cm.similarity_score
     FROM pain_records pr
     JOIN cluster_members cm ON cm.pain_record_id = pr.id
     WHERE cm.cluster_id = ?
+    ORDER BY cm.similarity_score DESC
   `).bind(clusterId).all();
   
   const records = members.results || [];
   const socialProofCount = records.length;
-  const uniqueAuthors = new Set(records.map((r: any) => r.author)).size;
+  
+  // v8: Properly calculate unique authors (filter out null/undefined)
+  const authorSet = new Set<string>();
+  let totalUpvotes = 0;
+  for (const r of records) {
+    const author = (r as any).author;
+    if (author && author !== '[deleted]' && author !== 'AutoModerator') {
+      authorSet.add(author);
+    }
+    totalUpvotes += (r as any).source_score || 0;
+  }
+  const uniqueAuthors = authorSet.size;
+  
   const subreddits = [...new Set(records.map((r: any) => r.subreddit))];
   const subredditCount = subreddits.length;
-  const totalUpvotes = records.reduce((sum: number, r: any) => sum + (r.source_score || 0), 0);
   
-  // Get top 5 quotes by variety (different authors)
+  // v8: Deduplicate personas
+  const allPersonas = [...new Set(records.map((r: any) => r.persona).filter(Boolean))];
+  const personas = deduplicatePersonas(allPersonas, 5);
+  
+  // Get severity breakdown
+  const severityCounts: Record<string, number> = {};
+  for (const r of records) {
+    const sev = (r as any).severity || 'medium';
+    severityCounts[sev] = (severityCounts[sev] || 0) + 1;
+  }
+  
+  // Get top 5 quotes by variety (different authors, highest similarity)
   const seenAuthors = new Set();
   const topQuotes: any[] = [];
-  for (const r of records.sort((a: any, b: any) => (b.source_score || 0) - (a.source_score || 0))) {
+  for (const r of records) {
     if (!seenAuthors.has((r as any).author) && topQuotes.length < 5) {
       topQuotes.push({
         text: ((r as any).raw_quote || '').slice(0, 300),
         author: (r as any).author || 'anonymous',
-        subreddit: (r as any).subreddit
+        subreddit: (r as any).subreddit,
+        persona: (r as any).persona,
+        severity: (r as any).severity,
+        similarity: (r as any).similarity_score
       });
       seenAuthors.add((r as any).author);
     }
   }
+  
+  // Calculate average similarity (cluster cohesion)
+  const avgSimilarity = records.length > 0
+    ? records.reduce((sum: number, r: any) => sum + ((r as any).similarity_score || 0), 0) / records.length
+    : 0;
   
   await db.prepare(`
     UPDATE pain_clusters SET 
@@ -168,113 +239,258 @@ async function updateClusterStats(db: D1Database, clusterId: number): Promise<vo
       total_upvotes = ?,
       subreddits_list = ?,
       top_quotes = ?,
+      categories = ?,
       updated_at = ?
     WHERE id = ?
   `).bind(
     socialProofCount,
-    socialProofCount,  // member_count = social_proof_count
+    socialProofCount,
     uniqueAuthors,
     subredditCount,
     totalUpvotes,
     JSON.stringify(subreddits),
     JSON.stringify(topQuotes),
+    JSON.stringify({ personas, severity: severityCounts, avgSimilarity }),
     now,
     clusterId
   ).run();
 }
 
+/**
+ * Main clustering function - processes unclustered records
+ */
 export async function runClustering(env: Env): Promise<{
   clustered: number;
-  new_clusters: number;
-  existing_clusters_updated: number;
+  embeddings_generated: number;
+  clusters_updated: number;
+  clusters_created: number;
 }> {
   const db = env.DB;
+  const apiKey = env.OPENAI_API_KEY;
   let clustered = 0;
-  let newClusters = 0;
-  let existingUpdated = 0;
+  let embeddingsGenerated = 0;
+  let clustersCreated = 0;
+  const clustersUpdated = new Set<number>();
   
-  // Get all existing clusters
-  const existingClustersResult = await db.prepare(`
-    SELECT id, centroid_text, social_proof_count 
-    FROM pain_clusters 
-    ORDER BY social_proof_count DESC
-  `).all() as D1Result<ExistingCluster>;
+  // Get records that have topics but no cluster
+  const records = await getUnclusteredRecords(db, 50);
   
-  let existingClusters = existingClustersResult.results || [];
-  
-  // Get unclustered records
-  const records = await getUnclusteredRecords(db, BATCH_SIZE);
-  
-  console.log(`Clustering ${records.length} records against ${existingClusters.length} clusters...`);
-  
-  // Track which clusters need stats update
-  const updatedClusterIds = new Set<number>();
+  console.log(`\n=== v7 Semantic Clustering ===`);
+  console.log(`Processing ${records.length} untagged pain points...`);
   
   for (const record of records) {
-    if (!record.id) continue;
+    if (!record.id || !record.topics) continue;
     
     try {
-      const result = await findBestCluster(
-        env.OPENAI_API_KEY, 
-        record.raw_quote,
-        record.subreddit,
-        existingClusters
+      // Generate embedding for the raw quote
+      const text = record.raw_quote || '';
+      if (!text || text.length < 20) continue;
+      
+      console.log(`\nProcessing #${record.id}: "${text.slice(0, 60)}..."`);
+      
+      const embedding = await generateEmbedding(apiKey, text);
+      embeddingsGenerated++;
+      
+      // Store embedding
+      const embeddingId = await storeEmbedding(db, record.id, embedding);
+      
+      // Update record with normalized topic
+      let topics: string[] = [];
+      try { topics = JSON.parse(record.topics); } catch {}
+      const normalizedTopic = normalizeTopic(topics[0] || 'general');
+      
+      await db.prepare(`
+        UPDATE pain_records SET embedding_id = ?, normalized_topic = ? WHERE id = ?
+      `).bind(embeddingId, normalizedTopic, record.id).run();
+      
+      // Find or create cluster
+      const existingClusterCount = await db.prepare(
+        "SELECT COUNT(*) as cnt FROM pain_clusters"
+      ).first() as { cnt: number };
+      
+      const { clusterId, similarity } = await getOrCreateSemanticCluster(
+        db, apiKey, record, embedding
       );
       
-      let clusterId: number;
+      const newClusterCount = await db.prepare(
+        "SELECT COUNT(*) as cnt FROM pain_clusters"
+      ).first() as { cnt: number };
       
-      if (result.match_id && result.similarity >= SIMILARITY_THRESHOLD) {
-        clusterId = result.match_id;
-        existingUpdated++;
-      } else {
-        clusterId = await createCluster(db, result.new_description);
-        existingClusters.push({
-          id: clusterId,
-          centroid_text: result.new_description,
-          social_proof_count: 0
-        });
-        newClusters++;
+      if (newClusterCount.cnt > existingClusterCount.cnt) {
+        clustersCreated++;
       }
       
-      await addToCluster(db, clusterId, record.id!, result.similarity);
-      updatedClusterIds.add(clusterId);
-      clustered++;
+      if (clusterId) {
+        await addToCluster(db, clusterId, record.id, similarity);
+        clustersUpdated.add(clusterId);
+        clustered++;
+      }
       
     } catch (error) {
-      console.error(`Failed to cluster record ${record.id}:`, error);
+      console.error(`  Error processing record ${record.id}:`, error);
     }
   }
   
   // Update stats for all affected clusters
-  console.log(`Updating stats for ${updatedClusterIds.size} clusters...`);
-  for (const clusterId of updatedClusterIds) {
+  console.log(`\nUpdating stats for ${clustersUpdated.size} clusters...`);
+  for (const clusterId of clustersUpdated) {
     await updateClusterStats(db, clusterId);
   }
   
   console.log(`\n=== Clustering Complete ===`);
-  console.log(`Clustered: ${clustered}, New: ${newClusters}, Updated: ${existingUpdated}`);
+  console.log(`Clustered: ${clustered}, Embeddings: ${embeddingsGenerated}`);
+  console.log(`Clusters created: ${clustersCreated}, updated: ${clustersUpdated.size}`);
   
-  return { clustered, new_clusters: newClusters, existing_clusters_updated: existingUpdated };
+  return { 
+    clustered, 
+    embeddings_generated: embeddingsGenerated,
+    clusters_updated: clustersUpdated.size,
+    clusters_created: clustersCreated
+  };
 }
 
 /**
- * v5: Get clusters that need synthesis (10% growth threshold)
+ * Merge similar clusters based on semantic similarity
+ * Run periodically to consolidate fragmented clusters
+ */
+export async function mergeSimularClusters(env: Env): Promise<{
+  merged: number;
+  clusters_remaining: number;
+}> {
+  const db = env.DB;
+  let merged = 0;
+  
+  // Get all clusters with their average embeddings
+  const clusters = await db.prepare(`
+    SELECT pc.id, pc.topic_canonical, pc.broad_category, pc.social_proof_count
+    FROM pain_clusters pc
+    WHERE pc.social_proof_count > 0
+    ORDER BY pc.social_proof_count DESC
+  `).all();
+  
+  const clusterList = clusters.results || [];
+  console.log(`\nChecking ${clusterList.length} clusters for merge opportunities...`);
+  
+  // Calculate average embedding for each cluster
+  const clusterEmbeddings = new Map<number, number[]>();
+  const allEmbeddings = await getAllEmbeddings(db);
+  
+  for (const cluster of clusterList) {
+    const members = await db.prepare(`
+      SELECT pain_record_id FROM cluster_members WHERE cluster_id = ?
+    `).bind((cluster as any).id).all();
+    
+    const memberIds = (members.results || []).map((m: any) => m.pain_record_id);
+    const memberEmbeddings = memberIds
+      .map(id => allEmbeddings.get(id))
+      .filter((e): e is number[] => e !== undefined);
+    
+    if (memberEmbeddings.length > 0) {
+      // Calculate centroid (average of all member embeddings)
+      const centroid = new Array(1536).fill(0);
+      for (const emb of memberEmbeddings) {
+        for (let i = 0; i < emb.length; i++) {
+          centroid[i] += emb[i] / memberEmbeddings.length;
+        }
+      }
+      clusterEmbeddings.set((cluster as any).id, centroid);
+    }
+  }
+  
+  // Find merge candidates
+  const mergeTargets = new Map<number, number>(); // from -> to
+  const processed = new Set<number>();
+  
+  for (const cluster of clusterList) {
+    const clusterId = (cluster as any).id;
+    if (processed.has(clusterId)) continue;
+    
+    const embedding = clusterEmbeddings.get(clusterId);
+    if (!embedding) continue;
+    
+    for (const other of clusterList) {
+      const otherId = (other as any).id;
+      if (otherId === clusterId || processed.has(otherId)) continue;
+      
+      const otherEmbedding = clusterEmbeddings.get(otherId);
+      if (!otherEmbedding) continue;
+      
+      const similarity = cosineSimilarity(embedding, otherEmbedding);
+      
+      // v8: Merge if very similar (higher threshold for quality)
+      if (similarity > 0.70) {  // v8: Higher merge threshold
+        const sameCategory = (cluster as any).broad_category === (other as any).broad_category;
+        const topicsMatch_ = topicsMatch(
+          (cluster as any).topic_canonical || '',
+          (other as any).topic_canonical || ''
+        );
+        
+        if (sameCategory || topicsMatch_) {
+          // Merge smaller into larger
+          if ((cluster as any).social_proof_count >= (other as any).social_proof_count) {
+            mergeTargets.set(otherId, clusterId);
+            processed.add(otherId);
+          } else {
+            mergeTargets.set(clusterId, otherId);
+            processed.add(clusterId);
+          }
+          console.log(`  Will merge cluster ${otherId} → ${clusterId} (similarity: ${similarity.toFixed(3)})`);
+        }
+      }
+    }
+    processed.add(clusterId);
+  }
+  
+  // Execute merges
+  for (const [fromId, toId] of mergeTargets) {
+    // Move all members to target cluster
+    await db.prepare(`
+      UPDATE cluster_members SET cluster_id = ? WHERE cluster_id = ?
+    `).bind(toId, fromId).run();
+    
+    await db.prepare(`
+      UPDATE pain_records SET cluster_id = ? WHERE cluster_id = ?
+    `).bind(toId, fromId).run();
+    
+    // Delete the source cluster
+    await db.prepare(`
+      DELETE FROM pain_clusters WHERE id = ?
+    `).bind(fromId).run();
+    
+    // Update target cluster stats
+    await updateClusterStats(db, toId);
+    merged++;
+  }
+  
+  const remaining = await db.prepare(
+    "SELECT COUNT(*) as cnt FROM pain_clusters"
+  ).first() as { cnt: number };
+  
+  console.log(`Merged ${merged} clusters. ${remaining.cnt} clusters remaining.`);
+  
+  return { merged, clusters_remaining: remaining.cnt };
+}
+
+/**
+ * Get clusters that need synthesis (5+ members, not recently synthesized)
+ * v8: More aggressive auto-iteration - trigger on 1-2 new mentions for smaller clusters
  */
 export async function getClustersNeedingSynthesis(db: D1Database, limit: number = 10): Promise<PainCluster[]> {
-  // Get clusters where:
-  // 1. Never synthesized (synthesized_at IS NULL)
-  // 2. OR has grown by 10%+ since last synthesis
+  // v8: Smaller clusters (5-10) re-synth on +1-2 mentions
+  // Larger clusters (10+) re-synth on +10% growth
   const result = await db.prepare(`
     SELECT * FROM pain_clusters 
-    WHERE social_proof_count >= 1
+    WHERE social_proof_count >= 5
     AND (
       synthesized_at IS NULL 
+      OR last_synth_count = 0
       OR (
-        last_synth_count > 0 
-        AND CAST((social_proof_count - last_synth_count) AS REAL) / last_synth_count >= 0.10
+        social_proof_count <= 10 
+        AND (social_proof_count - last_synth_count) >= 1
       )
       OR (
-        last_synth_count = 0
+        social_proof_count > 10 
+        AND (social_proof_count - last_synth_count) >= 2
       )
     )
     ORDER BY social_proof_count DESC 
@@ -288,7 +504,7 @@ export async function getClusterMembers(db: D1Database, clusterId: number): Prom
     SELECT pr.* FROM pain_records pr
     JOIN cluster_members cm ON cm.pain_record_id = pr.id
     WHERE cm.cluster_id = ?
-    ORDER BY pr.source_score DESC
+    ORDER BY cm.similarity_score DESC, pr.source_score DESC
   `).bind(clusterId).all() as D1Result<PainRecord>;
   return result.results || [];
 }

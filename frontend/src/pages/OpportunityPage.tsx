@@ -1,4 +1,4 @@
-// v5: Opportunity detail page with all quotes
+// v6.1: Opportunity detail page with topic info
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { fetchOpportunity } from '../api';
@@ -30,7 +30,7 @@ export default function OpportunityPage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
-        <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent"></div>
+        <div className="animate-spin rounded-full h-12 w-12 border-4 border-purple-500 border-t-transparent"></div>
       </div>
     );
   }
@@ -39,7 +39,7 @@ export default function OpportunityPage() {
     return (
       <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
         <p className="text-red-600">{error || 'Opportunity not found'}</p>
-        <Link to="/" className="text-blue-600 hover:underline mt-2 inline-block">
+        <Link to="/" className="text-purple-600 hover:underline mt-2 inline-block">
           ← Back to list
         </Link>
       </div>
@@ -49,23 +49,38 @@ export default function OpportunityPage() {
   const {
     product_name,
     tagline,
+    topic,
     how_it_works,
     target_customer,
     version,
     social_proof_count,
     subreddits,
+    personas,
     all_quotes,
     unique_authors,
     total_upvotes,
-    total_score
+    total_score,
+    severity_breakdown
   } = opportunity;
 
   const displayQuotes = showAllQuotes ? all_quotes : all_quotes.slice(0, 5);
+  
+  const hnQuotes = all_quotes.filter(q => q.subreddit === 'hackernews').length;
+  const redditQuotes = all_quotes.length - hnQuotes;
+
+  const getSeverityColor = (severity: string) => {
+    switch (severity) {
+      case 'critical': return 'bg-red-100 text-red-800 border-red-200';
+      case 'high': return 'bg-orange-100 text-orange-800 border-orange-200';
+      case 'medium': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+      case 'low': return 'bg-green-100 text-green-800 border-green-200';
+      default: return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
-      {/* Back link */}
-      <Link to="/" className="text-blue-600 hover:underline inline-flex items-center gap-1">
+      <Link to="/" className="text-purple-600 hover:underline inline-flex items-center gap-1">
         ← Back to all opportunities
       </Link>
 
@@ -75,20 +90,40 @@ export default function OpportunityPage() {
           <div>
             <div className="flex items-center gap-3 mb-2">
               <h1 className="text-3xl font-bold text-gray-900">{product_name}</h1>
-              <span className="px-3 py-1 text-sm font-semibold bg-blue-100 text-blue-700 rounded-full">
+              <span className="px-3 py-1 text-sm font-semibold bg-purple-100 text-purple-700 rounded-full">
                 v{version}
               </span>
             </div>
             <p className="text-xl text-gray-600">{tagline}</p>
+            
+            {/* Topic badge */}
+            {topic && (
+              <div className="mt-3">
+                <span className="px-3 py-1 text-sm bg-purple-50 text-purple-700 rounded-full capitalize">
+                  Topic: {topic.replace(/_/g, ' ')}
+                </span>
+              </div>
+            )}
+            
+            {/* Personas */}
+            {personas && personas.length > 0 && (
+              <div className="flex gap-2 mt-3">
+                {personas.map(p => (
+                  <span key={p} className="px-2.5 py-0.5 text-sm bg-blue-50 text-blue-700 rounded-full capitalize">
+                    {p.replace(/_/g, ' ')}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
           <div className="text-right">
-            <div className="text-4xl font-bold text-emerald-600">{total_score}</div>
+            <div className="text-4xl font-bold text-purple-600">{total_score}</div>
             <div className="text-sm text-gray-500">Score</div>
           </div>
         </div>
 
-        {/* Social Proof Stats */}
-        <div className="grid grid-cols-3 gap-4 mt-6 pt-6 border-t border-gray-100">
+        {/* Stats */}
+        <div className="grid grid-cols-4 gap-4 mt-6 pt-6 border-t border-gray-100">
           <div>
             <div className="text-2xl font-bold text-gray-900">👥 {social_proof_count}</div>
             <div className="text-sm text-gray-500">Total mentions</div>
@@ -99,9 +134,42 @@ export default function OpportunityPage() {
           </div>
           <div>
             <div className="text-2xl font-bold text-gray-900">{subreddits.length}</div>
-            <div className="text-sm text-gray-500">Subreddits</div>
+            <div className="text-sm text-gray-500">Communities</div>
+          </div>
+          <div>
+            <div className="text-2xl font-bold text-gray-900">↑ {total_upvotes}</div>
+            <div className="text-sm text-gray-500">Total upvotes</div>
           </div>
         </div>
+        
+        {/* Severity breakdown */}
+        {severity_breakdown && Object.keys(severity_breakdown).length > 0 && (
+          <div className="mt-4 pt-4 border-t border-gray-100">
+            <div className="text-sm font-semibold text-gray-700 mb-2">Severity Breakdown</div>
+            <div className="flex gap-3">
+              {severity_breakdown.critical > 0 && (
+                <span className="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm">
+                  🔴 Critical: {severity_breakdown.critical}
+                </span>
+              )}
+              {severity_breakdown.high > 0 && (
+                <span className="px-3 py-1 bg-orange-100 text-orange-800 rounded-full text-sm">
+                  🟠 High: {severity_breakdown.high}
+                </span>
+              )}
+              {severity_breakdown.medium > 0 && (
+                <span className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm">
+                  🟡 Medium: {severity_breakdown.medium}
+                </span>
+              )}
+              {severity_breakdown.low > 0 && (
+                <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm">
+                  🟢 Low: {severity_breakdown.low}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Target Customer & How It Works */}
@@ -116,7 +184,7 @@ export default function OpportunityPage() {
           <ul className="space-y-2">
             {how_it_works.map((feature, i) => (
               <li key={i} className="flex items-start gap-2 text-gray-700">
-                <span className="text-emerald-500 font-bold">•</span>
+                <span className="text-purple-500 font-bold">✓</span>
                 {feature}
               </li>
             ))}
@@ -124,22 +192,31 @@ export default function OpportunityPage() {
         </div>
       </div>
 
-      {/* Subreddits */}
+      {/* Source Communities */}
       <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
         <h2 className="text-lg font-bold text-gray-900 mb-3">📊 Source Communities</h2>
         <div className="flex flex-wrap gap-2">
           {subreddits.map(sub => (
             <a
               key={sub}
-              href={`https://reddit.com/r/${sub}`}
+              href={sub === 'hackernews' ? 'https://news.ycombinator.com' : `https://reddit.com/r/${sub}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="px-3 py-1 bg-orange-50 text-orange-700 rounded-full text-sm hover:bg-orange-100 transition-colors"
+              className={`px-3 py-1 rounded-full text-sm transition-colors ${
+                sub === 'hackernews' 
+                  ? 'bg-orange-100 text-orange-700 hover:bg-orange-200'
+                  : 'bg-purple-50 text-purple-700 hover:bg-purple-100'
+              }`}
             >
-              r/{sub}
+              {sub === 'hackernews' ? '🔶 HackerNews' : `r/${sub}`}
             </a>
           ))}
         </div>
+        {hnQuotes > 0 && (
+          <p className="text-sm text-gray-500 mt-3">
+            {redditQuotes} from Reddit • {hnQuotes} from HackerNews
+          </p>
+        )}
       </div>
 
       {/* All Quotes */}
@@ -151,7 +228,7 @@ export default function OpportunityPage() {
           {all_quotes.length > 5 && (
             <button
               onClick={() => setShowAllQuotes(!showAllQuotes)}
-              className="text-blue-600 hover:underline text-sm font-medium"
+              className="text-purple-600 hover:underline text-sm font-medium"
             >
               {showAllQuotes ? 'Show less' : `View all ${all_quotes.length} quotes`}
             </button>
@@ -160,7 +237,7 @@ export default function OpportunityPage() {
 
         <div className="space-y-4">
           {displayQuotes.map((quote, i) => (
-            <QuoteCard key={i} quote={quote} />
+            <QuoteCard key={i} quote={quote} getSeverityColor={getSeverityColor} />
           ))}
         </div>
 
@@ -177,12 +254,29 @@ export default function OpportunityPage() {
   );
 }
 
-function QuoteCard({ quote }: { quote: Quote }) {
+function QuoteCard({ quote, getSeverityColor }: { quote: Quote; getSeverityColor: (s: string) => string }) {
+  const isHN = quote.subreddit === 'hackernews';
+  
   return (
-    <div className="border-l-4 border-blue-200 pl-4 py-2">
+    <div className={`border-l-4 pl-4 py-2 ${isHN ? 'border-orange-300' : 'border-purple-200'}`}>
       <p className="text-gray-700 italic">"{quote.text}"</p>
-      <div className="mt-1 text-sm text-gray-500">
-        — u/{quote.author} in <span className="text-orange-600">r/{quote.subreddit}</span>
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-gray-500">— {quote.author}</span>
+        {isHN ? (
+          <span className="text-orange-600">🔶 HackerNews</span>
+        ) : (
+          <span className="text-purple-600">r/{quote.subreddit}</span>
+        )}
+        {quote.persona && (
+          <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full text-xs capitalize">
+            {quote.persona.replace(/_/g, ' ')}
+          </span>
+        )}
+        {quote.severity && (
+          <span className={`px-2 py-0.5 rounded-full text-xs border ${getSeverityColor(quote.severity)}`}>
+            {quote.severity}
+          </span>
+        )}
       </div>
     </div>
   );

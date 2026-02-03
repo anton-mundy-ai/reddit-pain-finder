@@ -1,56 +1,47 @@
-// Layer 2: HIGH THROUGHPUT Extraction
-// v5: Fast nano classifier (binary), store verbatim quotes
-// GPT-5-nano for volume - cheap and aggressive
+// Layer 2: BINARY FILTER with Nano v6.1
+// Nano ONLY does: Is this a pain point? Yes/No
+// Quality tagging happens in separate layer
 
 import { Env, PainRecord } from '../types';
 import { callGPT5Nano } from '../utils/openai';
 import { getUnprocessedComments } from './ingestion';
 
-// v5: Much larger batch for throughput
-const BATCH_SIZE = 50;
+const BATCH_SIZE = 200;
 
-// v5: SIMPLE binary classifier prompt
-const PAIN_CLASSIFIER_PROMPT = `Is this Reddit comment expressing a PERSONAL problem, frustration, or unmet need?
+// v6.1: SIMPLE binary classifier - nothing else
+const BINARY_FILTER_PROMPT = `Is this a PERSONAL problem, frustration, or unmet need?
 
 YES if they are:
-- Frustrated about something
-- Describing a problem they have  
-- Wishing something existed or worked better
-- Asking how to solve their problem
-- Complaining about a tool/process
+- Frustrated about something they experienced
+- Describing a problem THEY have
+- Wishing something existed or worked better for them
+- Complaining about a tool/process/situation they dealt with
 
 NO if they are:
-- Only giving advice (not their own problem)
-- Just sharing information
-- Celebrating a success
-- Making a joke
+- Only giving advice to others
+- Making general observations
+- Celebrating success
+- Making jokes
+- Quoting someone else's problem
 
-Respond ONLY with: {"is_pain": true} or {"is_pain": false}`;
+Respond ONLY: {"is_pain": true} or {"is_pain": false}`;
 
-/**
- * v5: Batch classify comments with nano model
- * Fast and cheap - we want volume
- */
-async function classifyComment(apiKey: string, body: string): Promise<boolean> {
+async function isPainPoint(apiKey: string, body: string): Promise<boolean> {
   try {
     const { content } = await callGPT5Nano(apiKey,
       [
-        { role: 'system', content: PAIN_CLASSIFIER_PROMPT },
-        { role: 'user', content: body.slice(0, 1000) }  // Shorter context for speed
+        { role: 'system', content: BINARY_FILTER_PROMPT },
+        { role: 'user', content: body.slice(0, 800) }
       ],
       { max_completion_tokens: 20, json_mode: true }
     );
-    const result = JSON.parse(content);
-    return result.is_pain === true;
-  } catch (error) {
+    return JSON.parse(content).is_pain === true;
+  } catch {
     // On error, err on side of inclusion
     return true;
   }
 }
 
-/**
- * Store a pain record - just the quote, simple
- */
 async function storePainRecord(db: D1Database, record: {
   source_type: string;
   source_id: string;
@@ -69,7 +60,7 @@ async function storePainRecord(db: D1Database, record: {
       record.source_type,
       record.source_id,
       record.subreddit,
-      record.raw_quote.slice(0, 1000),  // Cap quote length
+      record.raw_quote.slice(0, 1500),
       record.author,
       record.source_score,
       record.source_url,
@@ -86,9 +77,6 @@ async function storePainRecord(db: D1Database, record: {
   }
 }
 
-/**
- * Mark comment as processed
- */
 async function markCommentProcessed(db: D1Database, commentId: string, isPain: boolean): Promise<void> {
   await db.prepare(`
     UPDATE raw_comments SET processed_at = ?, is_pain_point = ? WHERE id = ?
@@ -105,18 +93,16 @@ export async function runExtraction(env: Env): Promise<{
   let painPointsFound = 0;
   let skipped = 0;
   
-  // Get batch of unprocessed comments
   const comments = await getUnprocessedComments(db, BATCH_SIZE);
   
-  console.log(`Processing ${comments.length} comments with nano classifier...`);
+  console.log(`Binary filtering ${comments.length} comments with Nano...`);
   
   for (const comment of comments) {
     processed++;
     
-    // Fast binary classification
-    const isPain = await classifyComment(env.OPENAI_API_KEY, comment.body);
+    // v6.1: ONLY binary filter
+    const isPain = await isPainPoint(env.OPENAI_API_KEY, comment.body);
     
-    // Mark as processed
     await markCommentProcessed(db, comment.id, isPain);
     
     if (!isPain) {
@@ -124,13 +110,24 @@ export async function runExtraction(env: Env): Promise<{
       continue;
     }
     
-    // Store pain point with verbatim quote
-    const permalink = `https://reddit.com/r/${comment.subreddit}/comments/${comment.post_id}/_/${comment.id}`;
+    // Determine source type
+    const isHN = comment.id.startsWith('hn_');
+    const sourceType = isHN ? 'hn_comment' : 'comment';
+    const subreddit = comment.subreddit || (isHN ? 'hackernews' : 'unknown');
+    
+    // Build permalink
+    let permalink: string;
+    if (isHN) {
+      const hnId = comment.id.replace('hn_', '');
+      permalink = `https://news.ycombinator.com/item?id=${hnId}`;
+    } else {
+      permalink = `https://reddit.com/r/${subreddit}/comments/${comment.post_id}/_/${comment.id}`;
+    }
     
     const id = await storePainRecord(db, {
-      source_type: 'comment',
+      source_type: sourceType,
       source_id: comment.id,
-      subreddit: comment.subreddit,
+      subreddit: subreddit,
       raw_quote: comment.body,
       author: comment.author,
       source_score: comment.score || 0,
@@ -139,7 +136,7 @@ export async function runExtraction(env: Env): Promise<{
     
     if (id) {
       painPointsFound++;
-      if (painPointsFound % 10 === 0) {
+      if (painPointsFound % 20 === 0) {
         console.log(`  Found ${painPointsFound} pain points so far...`);
       }
     }
@@ -151,10 +148,21 @@ export async function runExtraction(env: Env): Promise<{
   return { processed, pain_points_found: painPointsFound, skipped };
 }
 
+export async function getUntaggedRecords(db: D1Database, limit: number = 50): Promise<PainRecord[]> {
+  const result = await db.prepare(`
+    SELECT * FROM pain_records 
+    WHERE tagged_at IS NULL 
+    ORDER BY source_score DESC 
+    LIMIT ?
+  `).bind(limit).all() as D1Result<PainRecord>;
+  return result.results || [];
+}
+
 export async function getUnclusteredRecords(db: D1Database, limit: number = 100): Promise<PainRecord[]> {
   const result = await db.prepare(`
     SELECT * FROM pain_records 
     WHERE cluster_id IS NULL 
+    AND topics IS NOT NULL
     ORDER BY source_score DESC 
     LIMIT ?
   `).bind(limit).all() as D1Result<PainRecord>;

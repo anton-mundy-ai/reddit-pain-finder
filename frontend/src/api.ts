@@ -1,9 +1,15 @@
-// v5 API client
+// v7 API client - Embedding-based clustering
 
 const API_BASE = 'https://ideas.koda-software.com';
 
-export async function fetchOpportunities(limit: number = 20) {
-  const res = await fetch(`${API_BASE}/api/opportunities?limit=${limit}`);
+export async function fetchOpportunities(limit: number = 50, minMentions: number = 5, showAll: boolean = false) {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    min: String(minMentions)
+  });
+  if (showAll) params.set('all', 'true');
+  
+  const res = await fetch(`${API_BASE}/api/opportunities?${params}`);
   if (!res.ok) throw new Error('Failed to fetch opportunities');
   return res.json();
 }
@@ -17,6 +23,20 @@ export async function fetchOpportunity(id: number) {
 export async function fetchStats() {
   const res = await fetch(`${API_BASE}/api/stats`);
   if (!res.ok) throw new Error('Failed to fetch stats');
+  return res.json();
+}
+
+// Fetch pain points for visualization
+export async function fetchPainPoints(limit: number = 200) {
+  const res = await fetch(`${API_BASE}/api/painpoints?limit=${limit}`);
+  if (!res.ok) throw new Error('Failed to fetch pain points');
+  return res.json();
+}
+
+// Fetch topics for visualization
+export async function fetchTopics() {
+  const res = await fetch(`${API_BASE}/api/topics`);
+  if (!res.ok) throw new Error('Failed to fetch topics');
   return res.json();
 }
 

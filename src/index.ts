@@ -1,7 +1,7 @@
-// Reddit Pain Point Finder v12 - Main Worker Entry Point
-// Architecture: Embedding-based semantic clustering + Trend Detection + Market Sizing + MVP Features
+// Reddit Pain Point Finder v18 - Main Worker Entry Point
+// Architecture: Embedding-based semantic clustering + Trend Detection + Market Sizing + MVP Features + Real-time Alerts
 
-import { Env, OpportunityBrief, Quote, PainPointView, TopicView } from './types';
+import { Env, OpportunityBrief, Quote, PainPointView, TopicView, AuthContext } from './types';
 import { runIngestion } from './layers/ingestion';
 import { runExtraction } from './layers/extraction';
 import { runTagging, getTopicStats } from './layers/tagging';
@@ -13,8 +13,13 @@ import { runCompetitorMining, getCompetitorStats, getProductComplaints, getFeatu
 import { runTrendSnapshot, getTrends, getTrendHistory, getHotTopics, getCoolingTopics, getTrendStats } from './layers/trend-detection';
 import { runMarketSizing, getMarketEstimate, getAllMarketEstimates, getMarketSizingStats } from './layers/market-sizing';
 import { runMVPFeatureExtraction, getOpportunityFeatures, getAllFeatures, getFeatureStats, FeatureType } from './layers/mvp-features';
+import { runAlertChecks, getAlerts, getUnreadCount, markAlertRead, markAllAlertsRead, getAlertStats, AlertType } from './layers/alerts';
+import { runLandingGeneration, getLandingPage, getAllLandingPages, getLandingStats, generateLandingForOpportunity } from './layers/landing-generator';
+import { runOutreachListBuilder, getOutreachList, getOutreachStats, updateOutreachStatus, exportOutreachCSV, buildOutreachList, generateOutreachTemplates, OutreachStatus } from './layers/outreach';
+import { runGeoAnalysis, getGeoStats, getOpportunitiesByRegion, getClusterRegionBreakdown, REGION_INFO, RegionCode } from './layers/geo-analysis';
 import { generateEmbeddingsBatch, storeEmbedding } from './utils/embeddings';
 import { normalizeTopic, extractBroadCategory } from './utils/normalize';
+import { getAuthContext, getUserStats, logActivity, isPublicRoute } from './utils/auth';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -46,8 +51,85 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (path === '/health' || path === '/') {
     return jsonResponse({ 
       status: 'ok', 
-      version: 'v12-mvp-features',
+      version: 'v18-auth',
       timestamp: Date.now() 
+    });
+  }
+  
+  // ===============================
+  // v18: Auth & User Endpoints
+  // ===============================
+  
+  // Get current user (from Cloudflare Access JWT)
+  if (path === '/api/me') {
+    try {
+      const auth = await getAuthContext(request, env.DB);
+      
+      if (!auth.isAuthenticated) {
+        return jsonResponse({ 
+          authenticated: false,
+          message: 'Not authenticated. Access this page through Cloudflare Access.'
+        });
+      }
+      
+      return jsonResponse({
+        authenticated: true,
+        user: auth.user ? {
+          id: auth.user.id,
+          email: auth.user.email,
+          plan: auth.user.plan,
+          first_seen: auth.user.first_seen,
+          last_seen: auth.user.last_seen,
+          preferences: auth.user.preferences
+        } : { email: auth.email }
+      });
+    } catch (error) {
+      console.error('Error getting user:', error);
+      return jsonResponse({ error: 'Failed to get user info' }, 500);
+    }
+  }
+  
+  // Update user preferences
+  if (path === '/api/me/preferences' && request.method === 'POST') {
+    try {
+      const auth = await getAuthContext(request, env.DB);
+      if (!auth.isAuthenticated || !auth.user) {
+        return jsonResponse({ error: 'Not authenticated' }, 401);
+      }
+      
+      const body = await request.json() as { preferences: Record<string, any> };
+      const newPrefs = { ...auth.user.preferences, ...body.preferences };
+      
+      await env.DB.prepare(
+        'UPDATE users SET preferences = ? WHERE id = ?'
+      ).bind(JSON.stringify(newPrefs), auth.user.id).run();
+      
+      return jsonResponse({ success: true, preferences: newPrefs });
+    } catch (error) {
+      console.error('Error updating preferences:', error);
+      return jsonResponse({ error: 'Failed to update preferences' }, 500);
+    }
+  }
+  
+  // Get user stats (admin endpoint)
+  if (path === '/api/users/stats') {
+    try {
+      const auth = await getAuthContext(request, env.DB);
+      // In future, could restrict to admin users
+      
+      const stats = await getUserStats(env.DB);
+      return jsonResponse({ stats });
+    } catch (error) {
+      console.error('Error getting user stats:', error);
+      return jsonResponse({ error: 'Failed to get user stats' }, 500);
+    }
+  }
+  
+  // Cloudflare Access logout URL
+  if (path === '/api/logout') {
+    // Return the logout URL - frontend should redirect to this
+    return jsonResponse({
+      logout_url: 'https://ideas.koda-software.com/cdn-cgi/access/logout'
     });
   }
   
@@ -120,6 +202,71 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     } catch (error) {
       console.error('Error fetching trend history:', error);
       return jsonResponse({ error: 'Failed to fetch trend history' }, 500);
+    }
+  }
+  
+  // ===============================
+  // v18: Real-time Alerts Endpoints
+  // ===============================
+  
+  // Get alerts with filtering
+  if (path === '/api/alerts') {
+    try {
+      const type = url.searchParams.get('type') as AlertType | null;
+      const unreadOnly = url.searchParams.get('unread') === 'true';
+      const limit = parseInt(url.searchParams.get('limit') || '50');
+      const offset = parseInt(url.searchParams.get('offset') || '0');
+      
+      const [alerts, stats] = await Promise.all([
+        getAlerts(env.DB, { 
+          type: type || undefined, 
+          unreadOnly, 
+          limit, 
+          offset 
+        }),
+        getAlertStats(env.DB)
+      ]);
+      
+      return jsonResponse({ alerts, stats });
+    } catch (error) {
+      console.error('Error fetching alerts:', error);
+      return jsonResponse({ error: 'Failed to fetch alerts' }, 500);
+    }
+  }
+  
+  // Get unread count (lightweight endpoint for polling)
+  if (path === '/api/alerts/count') {
+    try {
+      const count = await getUnreadCount(env.DB);
+      return jsonResponse({ unread: count });
+    } catch (error) {
+      console.error('Error fetching alert count:', error);
+      return jsonResponse({ error: 'Failed to fetch alert count' }, 500);
+    }
+  }
+  
+  // Mark single alert as read
+  if (path.match(/^\/api\/alerts\/\d+\/read$/) && request.method === 'POST') {
+    const id = parseInt(path.split('/')[3]);
+    if (!id) return jsonResponse({ error: 'Invalid ID' }, 400);
+    
+    try {
+      const success = await markAlertRead(env.DB, id);
+      return jsonResponse({ success, id });
+    } catch (error) {
+      console.error('Error marking alert read:', error);
+      return jsonResponse({ error: 'Failed to mark alert read' }, 500);
+    }
+  }
+  
+  // Mark all alerts as read
+  if (path === '/api/alerts/read-all' && request.method === 'POST') {
+    try {
+      const count = await markAllAlertsRead(env.DB);
+      return jsonResponse({ success: true, marked: count });
+    } catch (error) {
+      console.error('Error marking all alerts read:', error);
+      return jsonResponse({ error: 'Failed to mark alerts read' }, 500);
     }
   }
   
@@ -278,29 +425,300 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       return jsonResponse({ error: 'Failed to fetch opportunity features' }, 500);
     }
   }
+  
+  // ===============================
+  // v15: Outreach List Endpoints
+  // ===============================
+  
+  // Get outreach list for a specific opportunity
+  if (path.match(/^\/api\/opportunities\/\d+\/outreach$/)) {
+    const id = parseInt(path.split('/')[3]);
+    if (!id) return jsonResponse({ error: 'Invalid ID' }, 400);
+    
+    try {
+      const status = url.searchParams.get('status') as OutreachStatus | undefined;
+      const limit = parseInt(url.searchParams.get('limit') || '100');
+      const sortBy = url.searchParams.get('sort') as 'fit_score' | 'recency' | 'engagement' || 'fit_score';
+      
+      // Build the list first (ensures it's up to date)
+      await buildOutreachList(env.DB, id);
+      
+      const [contacts, stats] = await Promise.all([
+        getOutreachList(env.DB, id, { status, limit, sortBy }),
+        getOutreachStats(env.DB, id)
+      ]);
+      
+      // Get opportunity info for templates
+      const opp = await env.DB.prepare(`
+        SELECT product_name, tagline, target_customer FROM pain_clusters WHERE id = ?
+      `).bind(id).first() as any;
+      
+      // Generate template if we have contacts
+      const templates = contacts.length > 0 && opp
+        ? generateOutreachTemplates(
+            opp.product_name || 'Unknown Product',
+            opp.tagline || '',
+            opp.target_customer || '',
+            contacts[0].pain_expressed
+          )
+        : [];
+      
+      return jsonResponse({ 
+        contacts, 
+        stats,
+        templates
+      });
+    } catch (error) {
+      console.error('Error fetching outreach list:', error);
+      return jsonResponse({ error: 'Failed to fetch outreach list' }, 500);
+    }
+  }
+  
+  // Export outreach list as CSV
+  if (path === '/api/outreach/export') {
+    try {
+      const opportunityId = url.searchParams.get('opportunity_id');
+      const csv = await exportOutreachCSV(
+        env.DB, 
+        opportunityId ? parseInt(opportunityId) : undefined
+      );
+      
+      return new Response(csv, {
+        headers: {
+          'Content-Type': 'text/csv',
+          'Content-Disposition': `attachment; filename="outreach-${Date.now()}.csv"`,
+          ...corsHeaders
+        }
+      });
+    } catch (error) {
+      console.error('Error exporting outreach:', error);
+      return jsonResponse({ error: 'Failed to export outreach list' }, 500);
+    }
+  }
+  
+  // Update outreach contact status
+  if (path.match(/^\/api\/outreach\/\d+\/status$/) && request.method === 'POST') {
+    const id = parseInt(path.split('/')[3]);
+    if (!id) return jsonResponse({ error: 'Invalid ID' }, 400);
+    
+    try {
+      const body = await request.json() as { status: OutreachStatus; notes?: string };
+      
+      if (!['pending', 'contacted', 'responded', 'declined'].includes(body.status)) {
+        return jsonResponse({ error: 'Invalid status' }, 400);
+      }
+      
+      const success = await updateOutreachStatus(env.DB, id, body.status, body.notes);
+      
+      if (success) {
+        return jsonResponse({ success: true, message: 'Status updated' });
+      } else {
+        return jsonResponse({ error: 'Failed to update status' }, 500);
+      }
+    } catch (error) {
+      console.error('Error updating outreach status:', error);
+      return jsonResponse({ error: 'Failed to update status' }, 500);
+    }
+  }
+  
+  // Get outreach stats across all opportunities
+  if (path === '/api/outreach/stats') {
+    try {
+      const result = await env.DB.prepare(`
+        SELECT 
+          COUNT(*) as total,
+          SUM(CASE WHEN outreach_status = 'pending' THEN 1 ELSE 0 END) as pending,
+          SUM(CASE WHEN outreach_status = 'contacted' THEN 1 ELSE 0 END) as contacted,
+          SUM(CASE WHEN outreach_status = 'responded' THEN 1 ELSE 0 END) as responded,
+          SUM(CASE WHEN outreach_status = 'declined' THEN 1 ELSE 0 END) as declined,
+          AVG(fit_score) as avg_fit_score,
+          COUNT(DISTINCT opportunity_id) as opportunities_with_contacts
+        FROM outreach_contacts
+      `).first();
+      
+      return jsonResponse({ stats: result });
+    } catch (error) {
+      console.error('Error fetching outreach stats:', error);
+      return jsonResponse({ error: 'Failed to fetch outreach stats' }, 500);
+    }
+  }
+  
+  // ===============================
+  // v13: Landing Page Endpoints
+  // ===============================
+  
+  // Get all landing pages
+  if (path === '/api/landings') {
+    try {
+      const limit = parseInt(url.searchParams.get('limit') || '100');
+      
+      const [landings, stats] = await Promise.all([
+        getAllLandingPages(env.DB, limit),
+        getLandingStats(env.DB)
+      ]);
+      
+      return jsonResponse({ landings, stats });
+    } catch (error) {
+      console.error('Error fetching landing pages:', error);
+      return jsonResponse({ error: 'Failed to fetch landing pages' }, 500);
+    }
+  }
+  
+  // Get landing page for a specific opportunity
+  if (path.match(/^\/api\/opportunities\/\d+\/landing$/)) {
+    const id = parseInt(path.split('/')[3]);
+    if (!id) return jsonResponse({ error: 'Invalid ID' }, 400);
+    
+    try {
+      const landing = await getLandingPage(env.DB, id);
+      
+      if (!landing) {
+        return jsonResponse({ error: 'No landing page found', opportunity_id: id }, 404);
+      }
+      
+      // Parse JSON fields for frontend
+      let benefits = [];
+      let socialProof = { mention_count: 0, sources: [], quotes: [] };
+      try { benefits = JSON.parse(landing.benefits || '[]'); } catch {}
+      try { socialProof = JSON.parse(landing.social_proof || '{}'); } catch {}
+      
+      return jsonResponse({ 
+        landing: {
+          ...landing,
+          benefits,
+          social_proof: socialProof
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching landing page:', error);
+      return jsonResponse({ error: 'Failed to fetch landing page' }, 500);
+    }
+  }
+
+  // ===============================
+  // v16: Geographic Analysis Endpoints
+  // ===============================
+  
+  // Get geo stats - pain points by region
+  if (path === '/api/geo/stats') {
+    try {
+      const stats = await getGeoStats(env.DB);
+      return jsonResponse({ 
+        ...stats, 
+        regions_info: REGION_INFO 
+      });
+    } catch (error) {
+      console.error('Error fetching geo stats:', error);
+      return jsonResponse({ error: 'Failed to fetch geo stats' }, 500);
+    }
+  }
+  
+  // Get opportunities by region
+  if (path.match(/^\/api\/geo\/[A-Z]{2,6}$/)) {
+    const region = path.split('/').pop()?.toUpperCase() as RegionCode;
+    if (!['AU', 'US', 'UK', 'EU', 'GLOBAL'].includes(region)) {
+      return jsonResponse({ error: 'Invalid region. Use: AU, US, UK, EU, GLOBAL' }, 400);
+    }
+    
+    try {
+      const limit = parseInt(url.searchParams.get('limit') || '50');
+      const opportunities = await getOpportunitiesByRegion(env.DB, region, limit);
+      
+      // Parse JSON fields for each opportunity
+      const formatted = opportunities.map((o: any) => ({
+        ...o,
+        how_it_works: safeParseJSON(o.how_it_works, []),
+        subreddits: safeParseJSON(o.subreddits_list, []),
+        top_quotes: safeParseJSON(o.top_quotes, []).slice(0, 3),
+        categories: safeParseJSON(o.categories, {}),
+      }));
+      
+      return jsonResponse({ 
+        region,
+        region_info: REGION_INFO[region],
+        opportunities: formatted,
+        count: formatted.length
+      });
+    } catch (error) {
+      console.error('Error fetching opportunities by region:', error);
+      return jsonResponse({ error: 'Failed to fetch opportunities by region' }, 500);
+    }
+  }
+  
+  // Get region breakdown for a specific opportunity
+  if (path.match(/^\/api\/opportunities\/\d+\/geo$/)) {
+    const id = parseInt(path.split('/')[3]);
+    if (!id) return jsonResponse({ error: 'Invalid ID' }, 400);
+    
+    try {
+      const breakdown = await getClusterRegionBreakdown(env.DB, id);
+      const total = Object.values(breakdown).reduce((a, b) => a + b, 0);
+      
+      const percentages: Record<string, number> = {};
+      for (const [region, count] of Object.entries(breakdown)) {
+        percentages[region] = total > 0 ? Math.round((count / total) * 100) : 0;
+      }
+      
+      return jsonResponse({ 
+        breakdown,
+        percentages,
+        total,
+        regions_info: REGION_INFO
+      });
+    } catch (error) {
+      console.error('Error fetching opportunity geo breakdown:', error);
+      return jsonResponse({ error: 'Failed to fetch geo breakdown' }, 500);
+    }
+  }
 
   // v12: Get opportunities with filter control and market data
+  // v16: Added region filter
   if (path === '/api/opportunities') {
     const limit = parseInt(url.searchParams.get('limit') || '50');
     const minMentions = parseInt(url.searchParams.get('min') || '5');  // Default 5
     const showAll = url.searchParams.get('all') === 'true';           // Override filter
     const sortBy = url.searchParams.get('sort') || 'mentions';        // mentions, score, market
+    const region = url.searchParams.get('region')?.toUpperCase() as RegionCode | null;  // v16: region filter
 
     try {
-      // v11: Join with market estimates
-      const clusters = await env.DB.prepare(`
-        SELECT c.*, 
-               m.tam_estimate, m.tam_tier, m.sam_tier, m.som_tier,
-               m.confidence as market_confidence, m.category as market_category
-        FROM pain_clusters c
-        LEFT JOIN market_estimates m ON c.id = m.cluster_id
-        WHERE c.product_name IS NOT NULL
-          AND c.social_proof_count >= ?
-        ORDER BY ${sortBy === 'market' ? 'COALESCE(m.tam_estimate, 0) DESC,' : ''} 
-                 ${sortBy === 'score' ? 'c.total_score DESC,' : ''} 
-                 c.social_proof_count DESC
-        LIMIT ?
-      `).bind(showAll ? 1 : minMentions, limit).all();
+      let clusters;
+      
+      if (region && ['AU', 'US', 'UK', 'EU', 'GLOBAL'].includes(region)) {
+        // v16: Filter by region - get clusters where this region is dominant
+        clusters = await env.DB.prepare(`
+          SELECT c.*, 
+                 m.tam_estimate, m.tam_tier, m.sam_tier, m.som_tier,
+                 m.confidence as market_confidence, m.category as market_category,
+                 (SELECT COUNT(*) FROM pain_records pr WHERE pr.cluster_id = c.id AND pr.geo_region = ?) as region_count,
+                 ROUND((SELECT COUNT(*) FROM pain_records pr WHERE pr.cluster_id = c.id AND pr.geo_region = ?) * 100.0 / 
+                       NULLIF(c.social_proof_count, 0), 1) as region_percentage
+          FROM pain_clusters c
+          LEFT JOIN market_estimates m ON c.id = m.cluster_id
+          WHERE c.product_name IS NOT NULL
+            AND c.social_proof_count >= ?
+            AND EXISTS (SELECT 1 FROM pain_records pr WHERE pr.cluster_id = c.id AND pr.geo_region = ?)
+          ORDER BY region_percentage DESC,
+                   ${sortBy === 'market' ? 'COALESCE(m.tam_estimate, 0) DESC,' : ''} 
+                   ${sortBy === 'score' ? 'c.total_score DESC,' : ''} 
+                   c.social_proof_count DESC
+          LIMIT ?
+        `).bind(region, region, showAll ? 1 : minMentions, region, limit).all();
+      } else {
+        // v11: Original query - join with market estimates
+        clusters = await env.DB.prepare(`
+          SELECT c.*, 
+                 m.tam_estimate, m.tam_tier, m.sam_tier, m.som_tier,
+                 m.confidence as market_confidence, m.category as market_category
+          FROM pain_clusters c
+          LEFT JOIN market_estimates m ON c.id = m.cluster_id
+          WHERE c.product_name IS NOT NULL
+            AND c.social_proof_count >= ?
+          ORDER BY ${sortBy === 'market' ? 'COALESCE(m.tam_estimate, 0) DESC,' : ''} 
+                   ${sortBy === 'score' ? 'c.total_score DESC,' : ''} 
+                   c.social_proof_count DESC
+          LIMIT ?
+        `).bind(showAll ? 1 : minMentions, limit).all();
+      }
       
       const opportunities = (clusters.results || []).map((c: any) => {
         const categoriesData = safeParseJSON(c.categories, {});
@@ -331,11 +749,18 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
             tam_estimate: c.tam_estimate,
             confidence: c.market_confidence,
             category: c.market_category
-          } : null
+          } : null,
+          // v16: Region data (when filtering by region)
+          region_count: c.region_count || null,
+          region_percentage: c.region_percentage || null
         };
       });
       
-      return jsonResponse({ opportunities });
+      return jsonResponse({ 
+        opportunities,
+        // v16: Include region filter info in response
+        filter: region ? { region, region_info: REGION_INFO[region] } : null
+      });
     } catch (error) {
       console.error('Error fetching opportunities:', error);
       return jsonResponse({ error: 'Failed to fetch opportunities' }, 500);
@@ -552,6 +977,32 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         total_features: 0, by_type: {}, opportunities_with_features: 0, avg_features_per_opportunity: 0, top_priority_features: 0
       }));
       
+      // v18: Add alert stats
+      const alertStats = await getAlertStats(env.DB).catch(() => ({
+        total: 0, unread: 0, by_type: {}, by_severity: {}, recent_24h: 0
+      }));
+      
+      // v15: Add outreach stats
+      const outreachStats = await env.DB.prepare(`
+        SELECT 
+          COUNT(*) as total,
+          SUM(CASE WHEN outreach_status = 'pending' THEN 1 ELSE 0 END) as pending,
+          SUM(CASE WHEN outreach_status = 'contacted' THEN 1 ELSE 0 END) as contacted,
+          SUM(CASE WHEN outreach_status = 'responded' THEN 1 ELSE 0 END) as responded,
+          COUNT(DISTINCT opportunity_id) as opportunities_with_contacts
+        FROM outreach_contacts
+      `).first().catch(() => ({ total: 0, pending: 0, contacted: 0, responded: 0, opportunities_with_contacts: 0 }));
+      
+      // v13: Add landing page stats
+      const landingStats = await getLandingStats(env.DB).catch(() => ({
+        total_generated: 0, opportunities_with_landing: 0, avg_version: 1, last_generated: null
+      }));
+      
+      // v16: Add geo stats
+      const geoStats = await getGeoStats(env.DB).catch(() => ({
+        regions: [], total: 0
+      }));
+      
       return jsonResponse({
         raw_posts: (postsCount as any)?.count || 0,
         raw_comments: (commentsCount as any)?.count || 0,
@@ -584,7 +1035,27 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         mvp_opportunities_with_features: featureStats.opportunities_with_features,
         mvp_avg_features_per_opp: featureStats.avg_features_per_opportunity,
         mvp_top_priority_features: featureStats.top_priority_features,
-        version: 'v12-mvp-features',
+        // v18: Alert stats
+        alerts_total: alertStats.total,
+        alerts_unread: alertStats.unread,
+        alerts_by_type: alertStats.by_type,
+        alerts_recent_24h: alertStats.recent_24h,
+        // v15: Outreach stats
+        outreach_total: (outreachStats as any)?.total || 0,
+        outreach_pending: (outreachStats as any)?.pending || 0,
+        outreach_contacted: (outreachStats as any)?.contacted || 0,
+        outreach_responded: (outreachStats as any)?.responded || 0,
+        outreach_opportunities: (outreachStats as any)?.opportunities_with_contacts || 0,
+        // v13: Landing page stats
+        landing_pages_total: landingStats.total_generated,
+        landing_pages_opportunities: landingStats.opportunities_with_landing,
+        landing_pages_avg_version: landingStats.avg_version,
+        landing_pages_last_generated: landingStats.last_generated,
+        // v16: Geo stats
+        geo_tagged: geoStats.total,
+        geo_by_region: Object.fromEntries(geoStats.regions.map(r => [r.region, r.pain_count])),
+        geo_regions: geoStats.regions,
+        version: 'v16-geo',
         last_updated: Date.now()
       });
     } catch (error) {
@@ -645,6 +1116,12 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ success: true, result });
   }
   
+  // v16: Geo analysis endpoint
+  if (path === '/api/trigger/geo-analyze' && request.method === 'POST') {
+    const result = await runGeoAnalysis(env);
+    return jsonResponse({ success: true, result });
+  }
+  
   if (path === '/api/trigger/full' && request.method === 'POST') {
     const results = await runFullPipeline(env);
     return jsonResponse({ success: true, results });
@@ -672,6 +1149,238 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (path === '/api/trigger/extract-features' && request.method === 'POST') {
     const result = await runMVPFeatureExtraction(env);
     return jsonResponse({ success: true, result });
+  }
+  
+  // v13: Generate all landing pages trigger
+  if (path === '/api/trigger/generate-all-landings' && request.method === 'POST') {
+    const result = await runLandingGeneration(env);
+    return jsonResponse({ success: true, result });
+  }
+  
+  // v13: Generate landing page for specific opportunity
+  if (path.match(/^\/api\/trigger\/generate-landing\/\d+$/) && request.method === 'POST') {
+    const id = parseInt(path.split('/').pop() || '0');
+    if (!id) return jsonResponse({ error: 'Invalid ID' }, 400);
+    
+    try {
+      const landing = await generateLandingForOpportunity(env.DB, env.OPENAI_API_KEY, id);
+      if (!landing) {
+        return jsonResponse({ error: 'Failed to generate landing page', opportunity_id: id }, 500);
+      }
+      
+      // Parse JSON fields for response
+      let benefits = [];
+      let socialProof = { mention_count: 0, sources: [], quotes: [] };
+      try { benefits = JSON.parse(landing.benefits || '[]'); } catch {}
+      try { socialProof = JSON.parse(landing.social_proof || '{}'); } catch {}
+      
+      return jsonResponse({ 
+        success: true, 
+        landing: {
+          ...landing,
+          benefits,
+          social_proof: socialProof
+        }
+      });
+    } catch (error) {
+      console.error('Error generating landing page:', error);
+      return jsonResponse({ error: `Failed to generate landing page: ${error}` }, 500);
+    }
+  }
+  
+  // v15: Outreach list builder trigger
+  if (path === '/api/trigger/build-outreach' && request.method === 'POST') {
+    const result = await runOutreachListBuilder(env);
+    return jsonResponse({ success: true, result });
+  }
+  
+  // v15: Migration endpoint for outreach_contacts table
+  if (path === '/api/trigger/migrate-v15' && request.method === 'POST') {
+    try {
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS outreach_contacts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT NOT NULL,
+          opportunity_id INTEGER NOT NULL,
+          fit_score INTEGER NOT NULL DEFAULT 0,
+          pain_severity TEXT,
+          engagement_score INTEGER DEFAULT 0,
+          recency_score INTEGER DEFAULT 0,
+          source_post_url TEXT NOT NULL,
+          pain_expressed TEXT NOT NULL,
+          subreddit TEXT,
+          post_created_at INTEGER,
+          outreach_status TEXT NOT NULL DEFAULT 'pending',
+          contacted_at INTEGER,
+          responded_at INTEGER,
+          notes TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (opportunity_id) REFERENCES pain_clusters(id),
+          UNIQUE(username, opportunity_id)
+        )
+      `).run();
+      
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_outreach_opportunity ON outreach_contacts(opportunity_id)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_outreach_username ON outreach_contacts(username)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_outreach_status ON outreach_contacts(outreach_status)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_outreach_fit_score ON outreach_contacts(fit_score DESC)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_outreach_recency ON outreach_contacts(post_created_at DESC)`).run();
+      
+      return jsonResponse({ success: true, message: 'v15 migration complete - outreach_contacts table created' });
+    } catch (error) {
+      console.error('v15 migration error:', error);
+      return jsonResponse({ error: `Migration failed: ${error}` }, 500);
+    }
+  }
+  
+  // v16: Migration endpoint for geo columns and geo_stats table
+  if (path === '/api/trigger/migrate-v16' && request.method === 'POST') {
+    try {
+      // Add geo columns to pain_records
+      try {
+        await env.DB.prepare(`ALTER TABLE pain_records ADD COLUMN geo_region TEXT`).run();
+      } catch (e) { /* Column may already exist */ }
+      
+      try {
+        await env.DB.prepare(`ALTER TABLE pain_records ADD COLUMN geo_confidence REAL`).run();
+      } catch (e) { /* Column may already exist */ }
+      
+      try {
+        await env.DB.prepare(`ALTER TABLE pain_records ADD COLUMN geo_signals TEXT`).run();
+      } catch (e) { /* Column may already exist */ }
+      
+      // Create indexes
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pain_geo_region ON pain_records(geo_region)`).run();
+      
+      // Create geo_stats table
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS geo_stats (
+          region TEXT PRIMARY KEY,
+          pain_count INTEGER DEFAULT 0,
+          cluster_count INTEGER DEFAULT 0,
+          avg_confidence REAL DEFAULT 0,
+          updated_at INTEGER NOT NULL
+        )
+      `).run();
+      
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_geo_stats_count ON geo_stats(pain_count DESC)`).run();
+      
+      return jsonResponse({ success: true, message: 'v16 migration complete - geo columns and geo_stats table created' });
+    } catch (error) {
+      console.error('v16 migration error:', error);
+      return jsonResponse({ error: `Migration failed: ${error}` }, 500);
+    }
+  }
+  
+  // v13: Migration endpoint for landing_pages table
+  if (path === '/api/trigger/migrate-v13' && request.method === 'POST') {
+    try {
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS landing_pages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          opportunity_id INTEGER NOT NULL UNIQUE,
+          headline TEXT NOT NULL,
+          subheadline TEXT NOT NULL,
+          benefits TEXT NOT NULL,
+          social_proof TEXT NOT NULL,
+          cta_text TEXT NOT NULL,
+          hero_description TEXT,
+          generated_at INTEGER NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1,
+          FOREIGN KEY (opportunity_id) REFERENCES pain_clusters(id)
+        )
+      `).run();
+      
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_landing_opportunity ON landing_pages(opportunity_id)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_landing_generated ON landing_pages(generated_at DESC)`).run();
+      
+      return jsonResponse({ success: true, message: 'v13 migration complete - landing_pages table created' });
+    } catch (error) {
+      console.error('v13 migration error:', error);
+      return jsonResponse({ error: `Migration failed: ${error}` }, 500);
+    }
+  }
+  
+  // v18: Alert check trigger (manual)
+  if (path === '/api/trigger/check-alerts' && request.method === 'POST') {
+    const result = await runAlertChecks(env.DB);
+    return jsonResponse({ success: true, result });
+  }
+  
+  // v18: Migration endpoint for alerts table
+  if (path === '/api/trigger/migrate-v18' && request.method === 'POST') {
+    try {
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS alerts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          alert_type TEXT NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL,
+          severity TEXT NOT NULL DEFAULT 'info',
+          opportunity_id INTEGER,
+          topic_canonical TEXT,
+          product_name TEXT,
+          created_at INTEGER NOT NULL,
+          read_at INTEGER,
+          FOREIGN KEY (opportunity_id) REFERENCES pain_clusters(id)
+        )
+      `).run();
+      
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(alert_type)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at DESC)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_alerts_opportunity ON alerts(opportunity_id)`).run();
+      
+      return jsonResponse({ success: true, message: 'v18 migration complete - alerts table created' });
+    } catch (error) {
+      console.error('v18 migration error:', error);
+      return jsonResponse({ error: `Migration failed: ${error}` }, 500);
+    }
+  }
+  
+  // v18-auth: Migration endpoint for users table (Cloudflare Access auth)
+  if (path === '/api/trigger/migrate-v18-auth' && request.method === 'POST') {
+    try {
+      // Users table
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email TEXT NOT NULL UNIQUE,
+          first_seen INTEGER NOT NULL,
+          last_seen INTEGER NOT NULL,
+          plan TEXT NOT NULL DEFAULT 'free',
+          preferences TEXT,
+          created_at INTEGER NOT NULL
+        )
+      `).run();
+      
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_users_plan ON users(plan)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen DESC)`).run();
+      
+      // User activity log
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS user_activity (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          action TEXT NOT NULL,
+          resource_id INTEGER,
+          metadata TEXT,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+      `).run();
+      
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_activity_user ON user_activity(user_id)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_activity_action ON user_activity(action)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_activity_created ON user_activity(created_at DESC)`).run();
+      
+      return jsonResponse({ success: true, message: 'v18-auth migration complete - users and user_activity tables created' });
+    } catch (error) {
+      console.error('v18-auth migration error:', error);
+      return jsonResponse({ error: `Migration failed: ${error}` }, 500);
+    }
   }
   
   // v12: Migration endpoint for mvp_features table
@@ -1038,10 +1747,10 @@ async function fixAllClusterStats(env: Env): Promise<{ fixed: number }> {
 }
 
 async function runFullPipeline(env: Env): Promise<any> {
-  const results: any = { version: 'v12' };
+  const results: any = { version: 'v16' };
   
   console.log('\n========================================');
-  console.log('Running v12 Pipeline: MVP Features + Market Sizing + Trends + Clustering');
+  console.log('Running v16 Pipeline: Geo + Alerts + MVP Features + Market Sizing + Trends + Clustering');
   console.log('========================================\n');
   
   // Increment cron counter for topic merge scheduling
@@ -1080,6 +1789,10 @@ async function runFullPipeline(env: Env): Promise<any> {
     unique_personas: tagging.personas_found.size
   };
   
+  // v16: Geographic analysis (runs after tagging, every cron)
+  console.log('\nStep 3.5: Geographic analysis (v16)...');
+  results.geo_analysis = await runGeoAnalysis(env);
+  
   console.log('\nStep 4: Semantic clustering (embeddings, threshold=0.65)...');
   results.clustering = await runClustering(env);
   
@@ -1111,8 +1824,12 @@ async function runFullPipeline(env: Env): Promise<any> {
     results.mvp_features = await runMVPFeatureExtraction(env);
   }
   
+  // v14: Alert checks (every cron)
+  console.log('\nStep 10: Alert checks...');
+  results.alerts = await runAlertChecks(env.DB);
+  
   console.log('\n========================================');
-  console.log('v12 Pipeline Complete!');
+  console.log('v14 Pipeline Complete!');
   console.log('========================================\n');
   
   return results;

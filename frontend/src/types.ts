@@ -1,4 +1,29 @@
-// v12: Types with MVP Features + embedding-based clustering + Trends + Market Sizing
+// v16: Types with Geo Analysis + Alerts + MVP Features + embedding-based clustering + Trends + Market Sizing
+
+// v16: Geographic region types
+export type RegionCode = 'AU' | 'US' | 'UK' | 'EU' | 'GLOBAL';
+
+export interface RegionInfo {
+  emoji: string;
+  name: string;
+  color: string;
+}
+
+export const REGION_INFO: Record<RegionCode, RegionInfo> = {
+  AU: { emoji: '🇦🇺', name: 'Australia', color: '#00843D' },
+  US: { emoji: '🇺🇸', name: 'United States', color: '#3C3B6E' },
+  UK: { emoji: '🇬🇧', name: 'United Kingdom', color: '#012169' },
+  EU: { emoji: '🇪🇺', name: 'Europe', color: '#003399' },
+  GLOBAL: { emoji: '🌍', name: 'Global', color: '#6B7280' },
+};
+
+export interface GeoRegionStat {
+  region: RegionCode;
+  pain_count: number;
+  cluster_count: number;
+  avg_confidence: number;
+  percentage: number;
+}
 
 export interface Quote {
   text: string;
@@ -7,6 +32,31 @@ export interface Quote {
   persona?: string;
   severity?: string;
   similarity?: number;  // v7: similarity score
+}
+
+// v14: Alert types
+export type AlertType = 'new_cluster' | 'trend_spike' | 'competitor_gap' | 'high_severity';
+export type AlertSeverity = 'info' | 'warning' | 'critical';
+
+export interface Alert {
+  id: number;
+  alert_type: AlertType;
+  title: string;
+  description: string;
+  severity: AlertSeverity;
+  opportunity_id: number | null;
+  topic_canonical: string | null;
+  product_name: string | null;
+  created_at: number;
+  read_at: number | null;
+}
+
+export interface AlertStats {
+  total: number;
+  unread: number;
+  by_type: Record<AlertType, number>;
+  by_severity: Record<AlertSeverity, number>;
+  recent_24h: number;
 }
 
 // v11: Market sizing types
@@ -69,6 +119,9 @@ export interface Opportunity {
   avg_similarity?: number;     // v7: cluster cohesion
   updated_at: number;
   market?: MarketEstimate | null;  // v11: market sizing
+  // v16: Region data (when filtering by region)
+  region_count?: number | null;
+  region_percentage?: number | null;
 }
 
 export interface OpportunityDetail extends Opportunity {
@@ -99,6 +152,36 @@ export interface Topic {
   personas: string[];
   subreddits: string[];
   severity_breakdown: Record<string, number>;
+}
+
+// v13: Landing page types
+export interface LandingBenefit {
+  icon: string;
+  title: string;
+  description: string;
+}
+
+export interface LandingSocialProof {
+  mention_count: number;
+  sources: string[];
+  quotes: Array<{
+    text: string;
+    author: string;
+    source: string;
+  }>;
+}
+
+export interface LandingPage {
+  id: number;
+  opportunity_id: number;
+  headline: string;
+  subheadline: string;
+  benefits: LandingBenefit[];
+  social_proof: LandingSocialProof;
+  cta_text: string;
+  hero_description?: string;
+  generated_at: number;
+  version: number;
 }
 
 export interface Stats {
@@ -133,6 +216,21 @@ export interface Stats {
   mvp_opportunities_with_features?: number;
   mvp_avg_features_per_opp?: number;
   mvp_top_priority_features?: number;
+  // v14: alert stats
+  alerts_total?: number;
+  alerts_unread?: number;
+  alerts_by_type?: Record<AlertType, number>;
+  alerts_recent_24h?: number;
+  // v15: Outreach stats
+  outreach_total?: number;
+  outreach_pending?: number;
+  outreach_contacted?: number;
+  outreach_responded?: number;
+  outreach_opportunities?: number;
+  // v16: Geo stats
+  geo_tagged?: number;
+  geo_by_region?: Record<RegionCode, number>;
+  geo_regions?: GeoRegionStat[];
   version: string;
   last_updated: number;
 }

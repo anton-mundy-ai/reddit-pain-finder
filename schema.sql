@@ -278,3 +278,77 @@ CREATE TABLE IF NOT EXISTS mvp_features (
 CREATE INDEX IF NOT EXISTS idx_features_opp ON mvp_features(opportunity_id);
 CREATE INDEX IF NOT EXISTS idx_features_type ON mvp_features(feature_type);
 CREATE INDEX IF NOT EXISTS idx_features_priority ON mvp_features(priority_score DESC);
+
+-- v16: Geographic Analysis
+-- Add geo columns to pain_records
+-- Note: These are added via migration for existing databases
+
+-- Geo stats aggregation table
+CREATE TABLE IF NOT EXISTS geo_stats (
+    region TEXT PRIMARY KEY,
+    pain_count INTEGER DEFAULT 0,
+    cluster_count INTEGER DEFAULT 0,
+    avg_confidence REAL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_geo_stats_count ON geo_stats(pain_count DESC);
+
+-- v15: Outreach Contacts Table
+CREATE TABLE IF NOT EXISTS outreach_contacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL,
+    opportunity_id INTEGER NOT NULL,
+    
+    -- Fit scoring
+    fit_score INTEGER NOT NULL DEFAULT 0,
+    pain_severity TEXT,
+    engagement_score INTEGER DEFAULT 0,
+    recency_score INTEGER DEFAULT 0,
+    
+    -- Source info
+    source_post_url TEXT NOT NULL,
+    pain_expressed TEXT NOT NULL,
+    subreddit TEXT,
+    post_created_at INTEGER,
+    
+    -- Outreach status
+    outreach_status TEXT NOT NULL DEFAULT 'pending',
+    contacted_at INTEGER,
+    responded_at INTEGER,
+    notes TEXT,
+    
+    -- Metadata
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    
+    FOREIGN KEY (opportunity_id) REFERENCES pain_clusters(id),
+    UNIQUE(username, opportunity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_outreach_opportunity ON outreach_contacts(opportunity_id);
+CREATE INDEX IF NOT EXISTS idx_outreach_username ON outreach_contacts(username);
+CREATE INDEX IF NOT EXISTS idx_outreach_status ON outreach_contacts(outreach_status);
+CREATE INDEX IF NOT EXISTS idx_outreach_fit_score ON outreach_contacts(fit_score DESC);
+CREATE INDEX IF NOT EXISTS idx_outreach_recency ON outreach_contacts(post_created_at DESC);
+
+-- v14: Real-time Alerts
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_type TEXT NOT NULL,              -- new_cluster, trend_spike, competitor_gap, high_severity
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'info', -- info, warning, critical
+    opportunity_id INTEGER,                -- optional link to cluster
+    topic_canonical TEXT,                  -- optional link to topic
+    product_name TEXT,                     -- optional product name
+    created_at INTEGER NOT NULL,
+    read_at INTEGER,                       -- NULL if unread
+    FOREIGN KEY (opportunity_id) REFERENCES pain_clusters(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(alert_type);
+CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
+CREATE INDEX IF NOT EXISTS idx_alerts_unread ON alerts(read_at) WHERE read_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alerts_opportunity ON alerts(opportunity_id) WHERE opportunity_id IS NOT NULL;

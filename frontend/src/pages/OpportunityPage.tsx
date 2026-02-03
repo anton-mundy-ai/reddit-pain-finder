@@ -1,8 +1,10 @@
-// v12: Opportunity detail page with MVP Features
+// v13: Opportunity detail page with MVP Features + Early Adopters Outreach + Landing Page Generator
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { fetchOpportunity, fetchOpportunityFeatures, MVPFeature } from '../api';
+import { fetchOpportunity, fetchOpportunityFeatures, fetchOutreachList, updateOutreachStatus, getOutreachExportUrl, fetchOpportunityLanding, generateOpportunityLanding, MVPFeature, OutreachContact, OutreachStats, OutreachTemplate, OutreachStatus, LandingPage } from '../api';
 import { OpportunityDetail, Quote } from '../types';
+
+type TabType = 'overview' | 'features' | 'landing' | 'outreach' | 'quotes';
 
 export default function OpportunityPage() {
   const { id } = useParams();
@@ -12,10 +14,21 @@ export default function OpportunityPage() {
     nice_to_have: MVPFeature[];
     differentiator: MVPFeature[];
   } | null>(null);
+  const [outreachData, setOutreachData] = useState<{
+    contacts: OutreachContact[];
+    stats: OutreachStats;
+    templates: OutreachTemplate[];
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [showAllQuotes, setShowAllQuotes] = useState(false);
   const [expandedFeature, setExpandedFeature] = useState<number | null>(null);
+  const [expandedTemplate, setExpandedTemplate] = useState<number | null>(null);
+  const [statusUpdating, setStatusUpdating] = useState<number | null>(null);
+  const [landing, setLanding] = useState<LandingPage | null>(null);
+  const [generatingLanding, setGeneratingLanding] = useState(false);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -38,6 +51,82 @@ export default function OpportunityPage() {
     }
     load();
   }, [id]);
+  
+  // Load outreach data when tab is selected
+  useEffect(() => {
+    async function loadOutreach() {
+      if (activeTab !== 'outreach' || !id || outreachData) return;
+      try {
+        const data = await fetchOutreachList(parseInt(id));
+        setOutreachData(data);
+      } catch (err) {
+        console.error('Failed to load outreach data:', err);
+      }
+    }
+    loadOutreach();
+  }, [activeTab, id, outreachData]);
+  
+  // Load landing page data when tab is selected
+  useEffect(() => {
+    async function loadLanding() {
+      if (activeTab !== 'landing' || !id || landing) return;
+      try {
+        const data = await fetchOpportunityLanding(parseInt(id));
+        if (data?.landing) {
+          setLanding(data.landing);
+        }
+      } catch (err) {
+        console.error('Failed to load landing page:', err);
+      }
+    }
+    loadLanding();
+  }, [activeTab, id, landing]);
+  
+  const handleGenerateLanding = async () => {
+    if (!id) return;
+    setGeneratingLanding(true);
+    try {
+      const result = await generateOpportunityLanding(parseInt(id));
+      if (result.landing) {
+        setLanding(result.landing);
+      }
+    } catch (err) {
+      console.error('Failed to generate landing:', err);
+    } finally {
+      setGeneratingLanding(false);
+    }
+  };
+  
+  const copyToClipboard = async (text: string, field: string) => {
+    await navigator.clipboard.writeText(text);
+    setCopiedField(field);
+    setTimeout(() => setCopiedField(null), 2000);
+  };
+  
+  async function handleStatusUpdate(contactId: number, newStatus: OutreachStatus) {
+    if (!outreachData) return;
+    setStatusUpdating(contactId);
+    try {
+      await updateOutreachStatus(contactId, newStatus);
+      // Update local state
+      setOutreachData({
+        ...outreachData,
+        contacts: outreachData.contacts.map(c => 
+          c.id === contactId ? { ...c, outreach_status: newStatus } : c
+        ),
+        stats: {
+          ...outreachData.stats,
+          pending: newStatus === 'pending' ? outreachData.stats.pending + 1 : outreachData.stats.pending - (outreachData.contacts.find(c => c.id === contactId)?.outreach_status === 'pending' ? 1 : 0),
+          contacted: newStatus === 'contacted' ? outreachData.stats.contacted + 1 : outreachData.stats.contacted,
+          responded: newStatus === 'responded' ? outreachData.stats.responded + 1 : outreachData.stats.responded
+        }
+      });
+    } catch (err) {
+      console.error('Failed to update status:', err);
+    } finally {
+      setStatusUpdating(null);
+    }
+  }
 
   if (loading) {
     return (

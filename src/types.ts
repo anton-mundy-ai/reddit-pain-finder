@@ -1,12 +1,33 @@
-// Reddit Pain Point Finder v7 - Types
-// Architecture: Embedding-based semantic clustering
+// Reddit Pain Point Finder v18 - Types
+// Architecture: Embedding-based semantic clustering + Auth
 
 // Environment bindings
 export interface Env {
   DB: D1Database;
   OPENAI_API_KEY: string;
   ENVIRONMENT: string;
+  // v18: Cloudflare Access settings (optional, for JWT verification)
+  CF_ACCESS_TEAM_DOMAIN?: string;  // e.g., "yourteam.cloudflareaccess.com"
+  CF_ACCESS_AUD?: string;          // Application audience tag
   // VECTORIZE?: VectorizeIndex; // Not available due to API permissions
+}
+
+// v18: User type
+export interface User {
+  id: number;
+  email: string;
+  first_seen: number;
+  last_seen: number;
+  plan: 'free' | 'pro';
+  preferences: Record<string, any>;
+  created_at: number;
+}
+
+// v18: Auth context for request handlers
+export interface AuthContext {
+  isAuthenticated: boolean;
+  user: User | null;
+  email: string | null;
 }
 
 // Reddit API types

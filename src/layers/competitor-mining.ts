@@ -147,6 +147,53 @@ async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Words that are too common and cause false positives
+const AMBIGUOUS_PRODUCTS = new Set([
+  'wave', 'granular', 'bushel', 'canvas', 'compass', 'realm', 'breeze', 'figured', 'swept', 'fons'
+]);
+
+// Context words that indicate we're talking about software/tools
+const SOFTWARE_CONTEXT = [
+  'software', 'app', 'platform', 'tool', 'system', 'integration', 'api', 'sync', 'login',
+  'dashboard', 'feature', 'update', 'version', 'subscription', 'pricing', 'support', 'bug',
+  'crash', 'slow', 'interface', 'ui', 'ux', 'export', 'import', 'data', 'report', 'invoice',
+  'billing', 'account', 'customer', 'client', 'booking', 'schedule', 'appointment', 'crm',
+  'pos', 'inventory', 'payroll', 'accounting', 'management', 'workflow', 'automation'
+];
+
+/**
+ * Check if text is actually about the software product (not common word usage)
+ */
+function isAboutSoftware(text: string, product: string): boolean {
+  const lowerText = text.toLowerCase();
+  const lowerProduct = product.toLowerCase();
+  
+  // If product name isn't ambiguous, assume it's about the product
+  if (!AMBIGUOUS_PRODUCTS.has(lowerProduct)) {
+    return true;
+  }
+  
+  // For ambiguous products, require software context
+  const hasSoftwareContext = SOFTWARE_CONTEXT.some(ctx => lowerText.includes(ctx));
+  
+  // Also check for patterns like "using [Product]", "[Product] app", etc.
+  const productPatterns = [
+    `using ${lowerProduct}`,
+    `${lowerProduct} app`,
+    `${lowerProduct} software`,
+    `${lowerProduct} platform`,
+    `switched to ${lowerProduct}`,
+    `switched from ${lowerProduct}`,
+    `${lowerProduct} integration`,
+    `${lowerProduct} api`,
+    `${lowerProduct} support`
+  ];
+  
+  const hasProductContext = productPatterns.some(p => lowerText.includes(p));
+  
+  return hasSoftwareContext || hasProductContext;
+}
+
 /**
  * Search a specific subreddit for complaints about a product
  */
@@ -171,6 +218,9 @@ async function searchSubredditForProduct(subreddit: string, product: string, lim
       
       const text = `${post.title} ${post.selftext || ''}`.toLowerCase();
       if (!text.includes(product.toLowerCase())) continue;
+      
+      // Filter out false positives for ambiguous product names
+      if (!isAboutSoftware(text, product)) continue;
       
       // Check for complaint signals
       const hasComplaintSignal = COMPLAINT_PATTERNS.some(pattern => {
@@ -229,6 +279,9 @@ async function searchRedditWideComplaints(product: string, limit: number = 30): 
         
         const text = `${post.title} ${post.selftext || ''}`.toLowerCase();
         if (!text.includes(product.toLowerCase())) continue;
+        
+        // Filter out false positives for ambiguous product names
+        if (!isAboutSoftware(text, product)) continue;
         
         results.push({
           type: 'reddit_post',

@@ -1,7 +1,7 @@
-// v17: Opportunity detail page with professional design
+// v17: Opportunity detail page with professional design + v15 Early Adopters
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { fetchOpportunity, fetchOpportunityFeatures, MVPFeature } from '../api';
+import { fetchOpportunity, fetchOpportunityFeatures, fetchOutreachList, updateOutreachStatus, getOutreachExportUrl, MVPFeature, OutreachContact, OutreachStats, OutreachTemplate, OutreachStatus } from '../api';
 import { OpportunityDetail, Quote } from '../types';
 import { 
   Card, CardHeader, CardTitle, CardFooter,
@@ -12,6 +12,8 @@ import {
   Skeleton, SkeletonText
 } from '../components/ui';
 
+type TabType = 'overview' | 'adopters';
+
 export default function OpportunityPage() {
   const { id } = useParams();
   const [opportunity, setOpportunity] = useState<OpportunityDetail | null>(null);
@@ -20,10 +22,18 @@ export default function OpportunityPage() {
     nice_to_have: MVPFeature[];
     differentiator: MVPFeature[];
   } | null>(null);
+  const [outreachData, setOutreachData] = useState<{
+    contacts: OutreachContact[];
+    stats: OutreachStats;
+    templates: OutreachTemplate[];
+  } | null>(null);
+  const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAllQuotes, setShowAllQuotes] = useState(false);
   const [expandedFeature, setExpandedFeature] = useState<number | null>(null);
+  const [expandedTemplate, setExpandedTemplate] = useState<number | null>(null);
+  const [statusUpdating, setStatusUpdating] = useState<number | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -46,6 +56,38 @@ export default function OpportunityPage() {
     }
     load();
   }, [id]);
+  
+  // Load outreach data when tab is selected
+  useEffect(() => {
+    async function loadOutreach() {
+      if (activeTab !== 'adopters' || !id || outreachData) return;
+      try {
+        const data = await fetchOutreachList(parseInt(id));
+        setOutreachData(data);
+      } catch (err) {
+        console.error('Failed to load outreach data:', err);
+      }
+    }
+    loadOutreach();
+  }, [activeTab, id, outreachData]);
+  
+  async function handleStatusUpdate(contactId: number, newStatus: OutreachStatus) {
+    if (!outreachData) return;
+    setStatusUpdating(contactId);
+    try {
+      await updateOutreachStatus(contactId, newStatus);
+      setOutreachData({
+        ...outreachData,
+        contacts: outreachData.contacts.map(c => 
+          c.id === contactId ? { ...c, outreach_status: newStatus } : c
+        )
+      });
+    } catch (err) {
+      console.error('Failed to update status:', err);
+    } finally {
+      setStatusUpdating(null);
+    }
+  }
 
   if (loading) {
     return (

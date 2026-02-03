@@ -231,6 +231,12 @@ export interface Stats {
   geo_tagged?: number;
   geo_by_region?: Record<RegionCode, number>;
   geo_regions?: GeoRegionStat[];
+  // v23: Aggregate engagement stats
+  unique_authors?: number;
+  total_upvotes?: number;
+  unique_subreddits?: number;
+  cluster_total_score?: number;
+  cluster_avg_score?: number;
   version: string;
   last_updated: number;
 }

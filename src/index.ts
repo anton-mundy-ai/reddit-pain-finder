@@ -869,9 +869,15 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   }
 
   // Get topic stats for visualization
+  // v22: Added pagination support
   if (path === '/api/topics') {
     try {
+      const limit = parseInt(url.searchParams.get('limit') || '50');
+      const page = parseInt(url.searchParams.get('page') || '1');
+      const offset = (page - 1) * limit;
+      
       // v8: Fetch all records with topics in one query for efficiency
+      // Note: We need to aggregate in JS because topics is a JSON array field
       const allRecords = await env.DB.prepare(`
         SELECT topics, persona, subreddit, severity
         FROM pain_records 
@@ -910,9 +916,9 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       }
       
       // Convert to array format
-      const topicsWithDetails: TopicView[] = [];
+      const allTopics: TopicView[] = [];
       for (const [topic, data] of topicData.entries()) {
-        topicsWithDetails.push({
+        allTopics.push({
           topic,
           count: data.count,
           personas: [...data.personas].slice(0, 5),
@@ -921,10 +927,24 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         });
       }
       
-      // Sort by count
-      topicsWithDetails.sort((a, b) => b.count - a.count);
+      // Sort by count descending
+      allTopics.sort((a, b) => b.count - a.count);
       
-      return jsonResponse({ topics: topicsWithDetails });
+      // Apply pagination
+      const total = allTopics.length;
+      const paginatedTopics = allTopics.slice(offset, offset + limit);
+      const totalPages = Math.ceil(total / limit);
+      
+      return jsonResponse({ 
+        topics: paginatedTopics,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasMore: page < totalPages
+        }
+      });
     } catch (error) {
       console.error('Error fetching topics:', error);
       return jsonResponse({ error: 'Failed to fetch topics' }, 500);
@@ -952,6 +972,27 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         env.DB.prepare("SELECT COUNT(*) as count FROM raw_comments WHERE subreddit = 'hackernews'").first(),
         env.DB.prepare("SELECT AVG(social_proof_count) as avg FROM pain_clusters WHERE social_proof_count > 0").first(),
       ]);
+      
+      // v23: Aggregate author/upvote stats using proper COUNT(DISTINCT) and SUM
+      const aggregateStats = await env.DB.prepare(`
+        SELECT 
+          COUNT(DISTINCT author) as unique_authors,
+          COALESCE(SUM(source_score), 0) as total_upvotes,
+          COUNT(DISTINCT subreddit) as unique_subreddits
+        FROM pain_records 
+        WHERE author IS NOT NULL AND author != '[deleted]' AND author != 'AutoModerator'
+      `).first().catch(() => ({ unique_authors: 0, total_upvotes: 0, unique_subreddits: 0 }));
+      
+      // v23: Cluster score aggregates
+      const clusterScoreStats = await env.DB.prepare(`
+        SELECT 
+          COALESCE(SUM(total_score), 0) as total_score_sum,
+          COALESCE(AVG(total_score), 0) as avg_score,
+          COALESCE(SUM(total_upvotes), 0) as cluster_upvotes_sum,
+          COALESCE(SUM(unique_authors), 0) as cluster_authors_sum
+        FROM pain_clusters 
+        WHERE product_name IS NOT NULL AND social_proof_count >= 5
+      `).first().catch(() => ({ total_score_sum: 0, avg_score: 0, cluster_upvotes_sum: 0, cluster_authors_sum: 0 }));
 
       // v9: Add competitor stats
       const competitorStats = await env.DB.prepare(`
@@ -1055,7 +1096,13 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         geo_tagged: geoStats.total,
         geo_by_region: Object.fromEntries(geoStats.regions.map(r => [r.region, r.pain_count])),
         geo_regions: geoStats.regions,
-        version: 'v16-geo',
+        // v23: Aggregate engagement stats
+        unique_authors: (aggregateStats as any)?.unique_authors || 0,
+        total_upvotes: (aggregateStats as any)?.total_upvotes || 0,
+        unique_subreddits: (aggregateStats as any)?.unique_subreddits || 0,
+        cluster_total_score: (clusterScoreStats as any)?.total_score_sum || 0,
+        cluster_avg_score: Math.round(((clusterScoreStats as any)?.avg_score || 0) * 10) / 10,
+        version: 'v23-stats',
         last_updated: Date.now()
       });
     } catch (error) {

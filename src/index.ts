@@ -111,7 +111,10 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       }));
       
       const subreddits = [...new Set(members.map(m => m.subreddit))];
-      const personas = [...new Set(members.map(m => m.persona).filter(Boolean))];
+      
+      // v8: Use deduplicated personas from cluster categories
+      const categoriesData = safeParseJSON((cluster as any).categories, {});
+      const personas = categoriesData.personas || [...new Set(members.map(m => m.persona).filter(Boolean))].slice(0, 5);
       
       // Severity breakdown
       const severityBreakdown: Record<string, number> = {};

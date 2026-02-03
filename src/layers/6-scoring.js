@@ -11,7 +11,7 @@ const BATCH_SIZE = 2;
 export async function runScoring(env) {
   const stats = { scored: 0 };
   
-  // Get clusters that need scoring (have briefs but no scores, or outdated)
+  // Get clusters that need scoring
   const clustersNeedingScoring = await env.DB.prepare(`
     SELECT c.id, c.member_count, b.summary, b.personas, b.common_workarounds
     FROM pain_clusters c
@@ -37,11 +37,17 @@ export async function runScoring(env) {
       if (records.results.length === 0) continue;
       
       // Calculate base metrics
-      const uniqueAuthors = new Set(records.results.map(r => r.author).filter(Boolean)).size;
+      const uniqueAuthors = new Set(records.results.map(r => r.source_author).filter(Boolean)).size;
       const uniqueSubreddits = new Set(records.results.map(r => r.subreddit)).size;
       const auRecords = records.results.filter(r => 
-        hasAustralianContext(r.problem_statement + ' ' + (r.context_location || ''), r.subreddit)
+        hasAustralianContext((r.problem_text || '') + ' ' + (r.context_location || ''), r.subreddit)
       ).length;
+      
+      // Adapt records for LLM (use problem_text as problem_statement)
+      const adaptedRecords = records.results.map(r => ({
+        ...r,
+        problem_statement: r.problem_text,
+      }));
       
       // Get LLM-based scores
       const brief = {
@@ -50,9 +56,9 @@ export async function runScoring(env) {
         common_workarounds: parseJSON(cluster.common_workarounds),
       };
       
-      const llmScores = await scoreCluster(env, brief, records.results);
+      const llmScores = await scoreCluster(env, brief, adaptedRecords);
       
-      // Calculate final scores with adjustments
+      // Calculate final scores
       const frequencyScore = calculateFrequencyScore(
         records.results.length,
         uniqueAuthors,
@@ -90,68 +96,46 @@ export async function runScoring(env) {
         await env.DB.prepare(`
           UPDATE cluster_scores SET
             total_score = ?,
-            frequency_score = ?, frequency_details = ?,
-            severity_score = ?, severity_details = ?,
-            economic_score = ?, economic_details = ?,
-            solvability_score = ?, solvability_details = ?,
-            competition_score = ?, competition_details = ?,
-            au_fit_score = ?, au_fit_details = ?,
+            frequency_score = ?,
+            severity_score = ?,
+            economic_score = ?,
+            solvability_score = ?,
+            competition_score = ?,
+            au_fit_score = ?,
             calculated_at = unixepoch()
           WHERE cluster_id = ?
         `).bind(
           totalScore,
-          frequencyScore, JSON.stringify({ 
-            mentions: records.results.length, 
-            uniqueAuthors, 
-            uniqueSubreddits,
-            llmReasoning: llmScores.frequency?.reasoning 
-          }),
-          severityScore, JSON.stringify({ reasoning: llmScores.severity?.reasoning }),
-          economicScore, JSON.stringify({ reasoning: llmScores.economic_value?.reasoning }),
-          solvabilityScore, JSON.stringify({ reasoning: llmScores.solvability?.reasoning }),
-          competitionScore, JSON.stringify({ reasoning: llmScores.competition?.reasoning }),
-          auFitScore, JSON.stringify({ 
-            auRecords, 
-            totalRecords: records.results.length,
-            reasoning: llmScores.au_fit?.reasoning 
-          }),
+          frequencyScore,
+          severityScore,
+          economicScore,
+          solvabilityScore,
+          competitionScore,
+          auFitScore,
           cluster.id
         ).run();
       } else {
         await env.DB.prepare(`
           INSERT INTO cluster_scores (
             cluster_id, total_score,
-            frequency_score, frequency_details,
-            severity_score, severity_details,
-            economic_score, economic_details,
-            solvability_score, solvability_details,
-            competition_score, competition_details,
-            au_fit_score, au_fit_details
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            frequency_score, severity_score, economic_score,
+            solvability_score, competition_score, au_fit_score
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           cluster.id,
           totalScore,
-          frequencyScore, JSON.stringify({ 
-            mentions: records.results.length, 
-            uniqueAuthors, 
-            uniqueSubreddits,
-            llmReasoning: llmScores.frequency?.reasoning 
-          }),
-          severityScore, JSON.stringify({ reasoning: llmScores.severity?.reasoning }),
-          economicScore, JSON.stringify({ reasoning: llmScores.economic_value?.reasoning }),
-          solvabilityScore, JSON.stringify({ reasoning: llmScores.solvability?.reasoning }),
-          competitionScore, JSON.stringify({ reasoning: llmScores.competition?.reasoning }),
-          auFitScore, JSON.stringify({ 
-            auRecords, 
-            totalRecords: records.results.length,
-            reasoning: llmScores.au_fit?.reasoning 
-          })
+          frequencyScore,
+          severityScore,
+          economicScore,
+          solvabilityScore,
+          competitionScore,
+          auFitScore
         ).run();
       }
       
       stats.scored++;
     } catch (error) {
-      console.error('Scoring error for cluster', cluster.id, ':', error);
+      console.error('Scoring error for cluster', cluster.id, ':', error.message);
     }
   }
   
@@ -159,19 +143,15 @@ export async function runScoring(env) {
 }
 
 function calculateFrequencyScore(mentions, uniqueAuthors, uniqueSubreddits, llmScore) {
-  // Base: LLM assessment
   let score = llmScore;
   
-  // Boost for unique authors (real signal, not one person spamming)
   if (uniqueAuthors >= 5) score += 15;
   else if (uniqueAuthors >= 3) score += 10;
   else if (uniqueAuthors >= 2) score += 5;
   
-  // Boost for cross-subreddit presence
   if (uniqueSubreddits >= 3) score += 15;
   else if (uniqueSubreddits >= 2) score += 10;
   
-  // Boost for volume
   if (mentions >= 10) score += 10;
   else if (mentions >= 5) score += 5;
   
@@ -179,7 +159,6 @@ function calculateFrequencyScore(mentions, uniqueAuthors, uniqueSubreddits, llmS
 }
 
 function calculateTotalScore(scores) {
-  // Weighted formula
   const weights = {
     frequency: 0.15,
     severity: 0.20,

@@ -1,7 +1,6 @@
 /**
  * Layer 4: Clustering
  * Group similar pain points using LLM-based similarity
- * Uses text embeddings with cosine similarity stored in D1
  */
 
 const SIMILARITY_THRESHOLD = 0.70;
@@ -12,16 +11,18 @@ export async function runClustering(env) {
   
   // Get unclustered pain records
   const unclustered = await env.DB.prepare(`
-    SELECT id, problem_statement, persona, subreddit
+    SELECT id, problem_text, persona, subreddit
     FROM pain_records
-    WHERE cluster_id IS NULL AND problem_statement IS NOT NULL AND problem_statement != ''
+    WHERE cluster_id IS NULL AND problem_text IS NOT NULL AND problem_text != ''
     LIMIT ?
   `).bind(BATCH_SIZE).all();
+  
+  console.log(`Found ${unclustered.results.length} unclustered records`);
   
   for (const record of unclustered.results) {
     try {
       // Generate embedding for the problem statement
-      const embedding = await getEmbedding(env, record.problem_statement);
+      const embedding = await getEmbedding(env, record.problem_text);
       
       if (!embedding) {
         console.error('Failed to generate embedding for record:', record.id);
@@ -34,17 +35,15 @@ export async function runClustering(env) {
       
       // Get existing clusters with their representative pain records
       const existingClusters = await env.DB.prepare(`
-        SELECT c.id as cluster_id, pr.problem_statement
+        SELECT c.id as cluster_id, c.centroid_text
         FROM pain_clusters c
-        JOIN cluster_members cm ON cm.cluster_id = c.id
-        JOIN pain_records pr ON pr.id = cm.pain_record_id
-        WHERE c.is_active = 1
-        GROUP BY c.id
-        LIMIT 100
+        WHERE c.centroid_text IS NOT NULL
+        LIMIT 50
       `).all();
       
       for (const cluster of existingClusters.results) {
-        const clusterEmbedding = await getEmbedding(env, cluster.problem_statement);
+        if (!cluster.centroid_text) continue;
+        const clusterEmbedding = await getEmbedding(env, cluster.centroid_text);
         if (clusterEmbedding) {
           const similarity = cosineSimilarity(embedding, clusterEmbedding);
           if (similarity >= SIMILARITY_THRESHOLD && similarity > bestScore) {
@@ -55,18 +54,21 @@ export async function runClustering(env) {
       }
       
       let clusterId;
+      const now = Math.floor(Date.now() / 1000);
       
       if (bestClusterId) {
-        // Add to existing cluster
         clusterId = bestClusterId;
+        console.log(`Record ${record.id} matched existing cluster ${clusterId}`);
       } else {
-        // Create new cluster
+        // Create new cluster with centroid_text from first record
         const result = await env.DB.prepare(`
-          INSERT INTO pain_clusters (name, member_count) VALUES (?, 1)
-        `).bind(`Cluster-${Date.now()}`).run();
+          INSERT INTO pain_clusters (centroid_text, member_count, created_at, updated_at)
+          VALUES (?, 1, ?, ?)
+        `).bind(record.problem_text, now, now).run();
         
         clusterId = result.meta.last_row_id;
         stats.newClusters++;
+        console.log(`Created new cluster ${clusterId} for record ${record.id}`);
       }
       
       // Update pain record with cluster
@@ -76,25 +78,43 @@ export async function runClustering(env) {
       
       // Add to cluster_members
       await env.DB.prepare(`
-        INSERT INTO cluster_members (cluster_id, pain_record_id, similarity_score)
-        VALUES (?, ?, ?)
-      `).bind(clusterId, record.id, bestScore || 1.0).run();
+        INSERT OR IGNORE INTO cluster_members (cluster_id, pain_record_id, similarity_score, added_at)
+        VALUES (?, ?, ?, ?)
+      `).bind(clusterId, record.id, bestScore || 1.0, now).run();
       
-      // Update cluster member count
-      const memberCount = await env.DB.prepare(`
-        SELECT COUNT(*) as count FROM cluster_members WHERE cluster_id = ?
+      // Update cluster stats
+      const memberStats = await env.DB.prepare(`
+        SELECT 
+          COUNT(*) as member_count,
+          COUNT(DISTINCT pr.source_author) as unique_authors,
+          COUNT(DISTINCT pr.subreddit) as subreddit_count,
+          AVG(pr.severity_score) as avg_severity
+        FROM cluster_members cm
+        JOIN pain_records pr ON pr.id = cm.pain_record_id
+        WHERE cm.cluster_id = ?
       `).bind(clusterId).first();
       
       await env.DB.prepare(`
-        UPDATE pain_clusters SET member_count = ?, updated_at = unixepoch() WHERE id = ?
-      `).bind(memberCount?.count || 1, clusterId).run();
+        UPDATE pain_clusters 
+        SET member_count = ?, unique_authors = ?, subreddit_count = ?, 
+            avg_severity = ?, updated_at = ?
+        WHERE id = ?
+      `).bind(
+        memberStats?.member_count || 1,
+        memberStats?.unique_authors || 1,
+        memberStats?.subreddit_count || 1,
+        memberStats?.avg_severity || 0,
+        now,
+        clusterId
+      ).run();
       
       stats.clustered++;
     } catch (error) {
-      console.error('Clustering error for record', record.id, ':', error);
+      console.error('Clustering error for record', record.id, ':', error.message);
     }
   }
   
+  console.log('Clustering stats:', stats);
   return stats;
 }
 

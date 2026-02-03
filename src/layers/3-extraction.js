@@ -1,6 +1,7 @@
 /**
  * Layer 3: Extraction
  * Extract structured pain records from filtered content
+ * Adapted to existing database schema
  */
 
 import { extractPainRecord } from '../utils/llm.js';
@@ -17,32 +18,16 @@ export async function runExtraction(env) {
       f.content_type,
       f.content_id,
       f.category,
-      f.problem_type,
-      CASE 
-        WHEN f.content_type = 'post' THEN p.title || '\n\n' || p.body
-        ELSE c.body
-      END as text,
-      CASE 
-        WHEN f.content_type = 'post' THEN p.subreddit
-        ELSE ps.subreddit
-      END as subreddit,
-      CASE 
-        WHEN f.content_type = 'post' THEN p.permalink
-        ELSE 'https://reddit.com' || ps.permalink
-      END as url,
-      CASE 
-        WHEN f.content_type = 'post' THEN p.author
-        ELSE c.author
-      END as author,
-      CASE 
-        WHEN f.content_type = 'post' THEN p.title
-        ELSE ps.title
-      END as post_title
+      p.title || ' ' || COALESCE(p.body, '') as text,
+      p.subreddit,
+      p.permalink,
+      p.author,
+      p.title as post_title,
+      p.score,
+      p.created_utc
     FROM filter_decisions f
-    LEFT JOIN raw_posts p ON f.content_type = 'post' AND f.content_id = p.id
-    LEFT JOIN raw_comments c ON f.content_type = 'comment' AND f.content_id = c.id
-    LEFT JOIN raw_posts ps ON f.content_type = 'comment' AND c.post_id = ps.id
-    LEFT JOIN pain_records pr ON pr.content_type = f.content_type AND pr.content_id = f.content_id
+    JOIN raw_posts p ON f.content_id = p.id AND f.content_type = 'post'
+    LEFT JOIN pain_records pr ON pr.source_id = f.content_id AND pr.source_type = f.content_type
     WHERE f.passes_filter = 1 AND pr.id IS NULL
     LIMIT ?
   `).bind(BATCH_SIZE).all();
@@ -60,16 +45,18 @@ export async function runExtraction(env) {
         extracted.context.location = 'Australia';
       }
       
-      // Store pain record
+      const severityScore = calculateSeverityScore(extracted.severity_signals);
+      
+      // Store pain record using existing schema column names
       await env.DB.prepare(`
         INSERT INTO pain_records (
-          content_type, content_id, subreddit,
-          problem_statement, persona,
+          source_type, source_id, subreddit,
+          problem_text, persona,
           context_industry, context_location, context_situation,
           severity_score, severity_signals, frequency_signals,
-          current_workaround, willingness_to_pay, constraints,
-          raw_quote, reddit_url, author
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          workaround_text, w2p_hints, constraints,
+          source_url, source_author, source_score, source_created_utc, extracted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
       `).bind(
         item.content_type,
         item.content_id,
@@ -79,20 +66,22 @@ export async function runExtraction(env) {
         extracted.context?.industry || null,
         extracted.context?.location || null,
         extracted.context?.situation || null,
-        calculateSeverityScore(extracted.severity_signals),
+        severityScore,
         JSON.stringify(extracted.severity_signals || []),
         JSON.stringify(extracted.frequency_signals || []),
         extracted.current_workaround || null,
         extracted.willingness_to_pay || null,
         JSON.stringify(extracted.constraints || []),
-        item.text.slice(0, 500),
-        item.url,
-        item.author
+        item.permalink ? `https://reddit.com${item.permalink}` : null,
+        item.author,
+        item.score || 0,
+        item.created_utc
       ).run();
       
       stats.extracted++;
+      console.log(`Extracted pain record from r/${item.subreddit}`);
     } catch (error) {
-      console.error('Extraction error:', error);
+      console.error('Extraction error:', error.message);
     }
   }
   

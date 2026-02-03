@@ -1,4 +1,4 @@
-// v9 API client - Embedding-based clustering + Competitor Mining
+// v10 API client - Embedding-based clustering + Competitor Mining + Trends
 
 export const API_BASE = 'https://ideas.koda-software.com';
 
@@ -37,6 +37,25 @@ export async function fetchPainPoints(limit: number = 200) {
 export async function fetchTopics() {
   const res = await fetch(`${API_BASE}/api/topics`);
   if (!res.ok) throw new Error('Failed to fetch topics');
+  return res.json();
+}
+
+// v10: Fetch trends
+export async function fetchTrends(options: { status?: string; limit?: number; period?: string } = {}) {
+  const params = new URLSearchParams();
+  if (options.status) params.set('status', options.status);
+  if (options.limit) params.set('limit', String(options.limit));
+  if (options.period) params.set('period', options.period);
+  
+  const res = await fetch(`${API_BASE}/api/trends?${params}`);
+  if (!res.ok) throw new Error('Failed to fetch trends');
+  return res.json();
+}
+
+// v10: Fetch trend history for a topic
+export async function fetchTrendHistory(topic: string, days: number = 90) {
+  const res = await fetch(`${API_BASE}/api/trends/history/${encodeURIComponent(topic)}?days=${days}`);
+  if (!res.ok) throw new Error('Failed to fetch trend history');
   return res.json();
 }
 

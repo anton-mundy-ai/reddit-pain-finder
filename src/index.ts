@@ -1,5 +1,5 @@
-// Reddit Pain Point Finder v7 - Main Worker Entry Point
-// Architecture: Embedding-based semantic clustering
+// Reddit Pain Point Finder v10 - Main Worker Entry Point
+// Architecture: Embedding-based semantic clustering + Trend Detection
 
 import { Env, OpportunityBrief, Quote, PainPointView, TopicView } from './types';
 import { runIngestion } from './layers/ingestion';
@@ -9,7 +9,8 @@ import { runClustering, getClusterMembers, mergeSimularClusters, updateClusterSt
 import { runSynthesis } from './layers/synthesis';
 import { runScoring, getTopOpportunities } from './layers/scoring';
 import { runTopicMerge, shouldRunTopicMerge, incrementCronCount } from './layers/topic-merge';
-import { runCompetitorMining, getCompetitorStats, getProductComplaints, getFeatureGaps, getCategoryStats, ALL_PRODUCTS } from './layers/competitor-mining';
+import { runCompetitorMining, getCompetitorStats, getProductComplaints, getFeatureGaps, getCategoryStats, ALL_PRODUCTS, NICHE_VERTICALS } from './layers/competitor-mining';
+import { runTrendSnapshot, getTrends, getTrendHistory, getHotTopics, getCoolingTopics, getTrendStats } from './layers/trend-detection';
 import { generateEmbeddingsBatch, storeEmbedding } from './utils/embeddings';
 import { normalizeTopic, extractBroadCategory } from './utils/normalize';
 
@@ -43,9 +44,81 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (path === '/health' || path === '/') {
     return jsonResponse({ 
       status: 'ok', 
-      version: 'v9-competitors',
+      version: 'v10-trends',
       timestamp: Date.now() 
     });
+  }
+  
+  // ===============================
+  // v10: Trend Detection Endpoints
+  // ===============================
+  
+  // Get all trends with filtering
+  if (path === '/api/trends') {
+    try {
+      const status = url.searchParams.get('status') as any || 'all';
+      const limit = parseInt(url.searchParams.get('limit') || '50');
+      const period = (url.searchParams.get('period') || '7d') as '7d' | '30d' | '90d';
+      
+      const [trends, stats] = await Promise.all([
+        getTrends(env.DB, { status, limit, period }),
+        getTrendStats(env.DB)
+      ]);
+      
+      // Categorize trends by status
+      const hot = trends.filter(t => t.trend_status === 'hot');
+      const rising = trends.filter(t => t.trend_status === 'rising');
+      const stable = trends.filter(t => t.trend_status === 'stable');
+      const cooling = trends.filter(t => t.trend_status === 'cooling' || t.trend_status === 'cold');
+      
+      return jsonResponse({ 
+        trends,
+        categorized: { hot, rising, stable, cooling },
+        stats
+      });
+    } catch (error) {
+      console.error('Error fetching trends:', error);
+      return jsonResponse({ error: 'Failed to fetch trends' }, 500);
+    }
+  }
+  
+  // Get hot/rising topics only
+  if (path === '/api/trends/hot') {
+    try {
+      const limit = parseInt(url.searchParams.get('limit') || '20');
+      const hot = await getHotTopics(env.DB, limit);
+      return jsonResponse({ hot_topics: hot });
+    } catch (error) {
+      console.error('Error fetching hot topics:', error);
+      return jsonResponse({ error: 'Failed to fetch hot topics' }, 500);
+    }
+  }
+  
+  // Get cooling/declining topics
+  if (path === '/api/trends/cooling') {
+    try {
+      const limit = parseInt(url.searchParams.get('limit') || '20');
+      const cooling = await getCoolingTopics(env.DB, limit);
+      return jsonResponse({ cooling_topics: cooling });
+    } catch (error) {
+      console.error('Error fetching cooling topics:', error);
+      return jsonResponse({ error: 'Failed to fetch cooling topics' }, 500);
+    }
+  }
+  
+  // Get trend history for a specific topic
+  if (path.startsWith('/api/trends/history/')) {
+    const topic = decodeURIComponent(path.split('/api/trends/history/')[1] || '');
+    if (!topic) return jsonResponse({ error: 'Invalid topic' }, 400);
+    
+    try {
+      const days = parseInt(url.searchParams.get('days') || '90');
+      const history = await getTrendHistory(env.DB, topic, days);
+      return jsonResponse({ history });
+    } catch (error) {
+      console.error('Error fetching trend history:', error);
+      return jsonResponse({ error: 'Failed to fetch trend history' }, 500);
+    }
   }
   
   // ===============================
@@ -345,6 +418,11 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         FROM competitor_mentions
       `).first().catch(() => ({ total_complaints: 0, products_tracked: 0, feature_gaps: 0 }));
       
+      // v10: Add trend stats
+      const trendStats = await getTrendStats(env.DB).catch(() => ({
+        total_tracked: 0, hot_count: 0, rising_count: 0, stable_count: 0, cooling_count: 0, last_snapshot: null
+      }));
+      
       return jsonResponse({
         raw_posts: (postsCount as any)?.count || 0,
         raw_comments: (commentsCount as any)?.count || 0,
@@ -361,7 +439,13 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         competitor_complaints: (competitorStats as any)?.total_complaints || 0,
         competitor_products: (competitorStats as any)?.products_tracked || 0,
         competitor_feature_gaps: (competitorStats as any)?.feature_gaps || 0,
-        version: 'v9-competitors',
+        // v10: Trend stats
+        trends_tracked: trendStats.total_tracked,
+        trends_hot: trendStats.hot_count,
+        trends_rising: trendStats.rising_count,
+        trends_cooling: trendStats.cooling_count,
+        last_trend_snapshot: trendStats.last_snapshot,
+        version: 'v10-trends',
         last_updated: Date.now()
       });
     } catch (error) {
@@ -433,10 +517,78 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ success: true, result });
   }
   
-  // v9: Migration endpoint for competitor_mentions table
+  // v10: Trend snapshot trigger (manual)
+  if (path === '/api/trigger/snapshot-trends' && request.method === 'POST') {
+    const result = await runTrendSnapshot(env);
+    return jsonResponse({ success: true, result });
+  }
+  
+  // v10: Migration endpoint for pain_trends tables
+  if (path === '/api/trigger/migrate-v10' && request.method === 'POST') {
+    try {
+      // Create pain_trends table
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS pain_trends (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          topic_canonical TEXT NOT NULL,
+          cluster_id INTEGER,
+          snapshot_date TEXT NOT NULL,
+          bucket_type TEXT DEFAULT 'daily',
+          mention_count INTEGER NOT NULL,
+          new_mentions INTEGER DEFAULT 0,
+          velocity REAL,
+          velocity_7d REAL,
+          velocity_30d REAL,
+          trend_status TEXT,
+          is_spike INTEGER DEFAULT 0,
+          avg_severity REAL,
+          subreddit_spread INTEGER,
+          created_at INTEGER NOT NULL,
+          UNIQUE(topic_canonical, snapshot_date, bucket_type)
+        )
+      `).run();
+      
+      // Create indexes
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_trends_topic ON pain_trends(topic_canonical)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_trends_date ON pain_trends(snapshot_date DESC)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_trends_status ON pain_trends(trend_status)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_trends_velocity ON pain_trends(velocity DESC)`).run();
+      
+      // Create trend_summary table
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS trend_summary (
+          topic_canonical TEXT PRIMARY KEY,
+          cluster_id INTEGER,
+          current_count INTEGER,
+          current_velocity REAL,
+          trend_status TEXT,
+          peak_count INTEGER,
+          peak_date TEXT,
+          first_seen TEXT,
+          last_updated INTEGER,
+          sparkline TEXT
+        )
+      `).run();
+      
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_summary_status ON trend_summary(trend_status)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_summary_velocity ON trend_summary(current_velocity DESC)`).run();
+      
+      // Add state tracking
+      await env.DB.prepare(`
+        INSERT OR IGNORE INTO processing_state (key, value, updated_at) VALUES ('last_trend_snapshot', '0', 0)
+      `).run();
+      
+      return jsonResponse({ success: true, message: 'v10 migration complete - trend tables created' });
+    } catch (error) {
+      console.error('v10 migration error:', error);
+      return jsonResponse({ error: `Migration failed: ${error}` }, 500);
+    }
+  }
+  
+  // v9.2: Migration endpoint for competitor_mentions table (with subreddit column)
   if (path === '/api/trigger/migrate-v9' && request.method === 'POST') {
     try {
-      // Create table
+      // Create table with all columns
       await env.DB.prepare(`
         CREATE TABLE IF NOT EXISTS competitor_mentions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -449,20 +601,29 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           score INTEGER DEFAULT 0,
           sentiment TEXT,
           feature_gap TEXT,
+          subreddit TEXT,
           created_at INTEGER NOT NULL,
           UNIQUE(source_url)
         )
       `).run();
       
-      // Create indexes separately
+      // Try to add subreddit column if it doesn't exist (for existing tables)
+      try {
+        await env.DB.prepare(`ALTER TABLE competitor_mentions ADD COLUMN subreddit TEXT`).run();
+      } catch (e) {
+        // Column already exists, ignore
+      }
+      
+      // Create indexes
       await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_competitor_product ON competitor_mentions(product_name)`).run();
       await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_competitor_category ON competitor_mentions(category)`).run();
       await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_competitor_sentiment ON competitor_mentions(sentiment)`).run();
       await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_competitor_score ON competitor_mentions(score DESC)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_competitor_subreddit ON competitor_mentions(subreddit)`).run();
       
-      return jsonResponse({ success: true, message: 'v9 migration complete - competitor_mentions table created' });
+      return jsonResponse({ success: true, message: 'v9.2 migration complete - competitor_mentions table with subreddit column' });
     } catch (error) {
-      console.error('v9 migration error:', error);
+      console.error('v9.2 migration error:', error);
       return jsonResponse({ error: `Migration failed: ${error}` }, 500);
     }
   }
@@ -661,10 +822,10 @@ async function fixAllClusterStats(env: Env): Promise<{ fixed: number }> {
 }
 
 async function runFullPipeline(env: Env): Promise<any> {
-  const results: any = { version: 'v9' };
+  const results: any = { version: 'v10' };
   
   console.log('\n========================================');
-  console.log('Running v9 Pipeline: Competitor Mining + Clustering');
+  console.log('Running v10 Pipeline: Trends + Competitor Mining + Clustering');
   console.log('========================================\n');
   
   // Increment cron counter for topic merge scheduling
@@ -718,8 +879,12 @@ async function runFullPipeline(env: Env): Promise<any> {
   console.log('\nStep 6: Scoring...');
   results.scoring = await runScoring(env);
   
+  // v10: Run trend snapshot daily (every cron, but data is deduplicated by date)
+  console.log('\nStep 7: Trend snapshot...');
+  results.trends = await runTrendSnapshot(env);
+  
   console.log('\n========================================');
-  console.log('v9 Pipeline Complete!');
+  console.log('v10 Pipeline Complete!');
   console.log('========================================\n');
   
   return results;

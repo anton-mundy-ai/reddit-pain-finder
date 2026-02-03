@@ -4,6 +4,7 @@ import HomePage from './pages/HomePage'
 import OpportunityPage from './pages/OpportunityPage'
 import TopicsPage from './pages/TopicsPage'
 import CompetitorsPage from './pages/CompetitorsPage'
+import TrendsPage from './pages/TrendsPage'
 
 function App() {
   return (
@@ -13,6 +14,7 @@ function App() {
         <Route path="/opportunity/:id" element={<OpportunityPage />} />
         <Route path="/topics" element={<TopicsPage />} />
         <Route path="/competitors" element={<CompetitorsPage />} />
+        <Route path="/trends" element={<TrendsPage />} />
       </Routes>
     </Layout>
   )

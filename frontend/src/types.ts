@@ -1,4 +1,4 @@
-// v7: Types with embedding-based clustering
+// v10: Types with embedding-based clustering + Trends
 
 export interface Quote {
   text: string;
@@ -7,6 +7,34 @@ export interface Quote {
   persona?: string;
   severity?: string;
   similarity?: number;  // v7: similarity score
+}
+
+// v10: Trend types
+export type TrendStatus = 'hot' | 'rising' | 'stable' | 'cooling' | 'cold';
+
+export interface TrendSummary {
+  topic_canonical: string;
+  cluster_id: number | null;
+  current_count: number;
+  current_velocity: number;
+  trend_status: TrendStatus;
+  peak_count: number;
+  peak_date: string;
+  first_seen: string;
+  last_updated: number;
+  sparkline: number[];
+  product_name?: string;
+  tagline?: string;
+}
+
+export interface TrendHistory {
+  topic: string;
+  snapshots: Array<{
+    date: string;
+    count: number;
+    velocity: number | null;
+    status: TrendStatus;
+  }>;
 }
 
 export interface Opportunity {
@@ -76,6 +104,12 @@ export interface Stats {
   competitor_complaints?: number;
   competitor_products?: number;
   competitor_feature_gaps?: number;
+  // v10: trend stats
+  trends_tracked?: number;
+  trends_hot?: number;
+  trends_rising?: number;
+  trends_cooling?: number;
+  last_trend_snapshot?: string | null;
   version: string;
   last_updated: number;
 }

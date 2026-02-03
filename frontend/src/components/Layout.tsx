@@ -6,6 +6,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   
   const navLinks = [
     { path: '/', label: 'Opportunities', icon: '💡' },
+    { path: '/trends', label: 'Trends', icon: '📊' },
     { path: '/topics', label: 'Topics', icon: '🏷️' },
     { path: '/competitors', label: 'Competitor Gaps', icon: '🎯' },
   ];

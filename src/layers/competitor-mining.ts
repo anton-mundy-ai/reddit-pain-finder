@@ -4,16 +4,65 @@
 import { Env } from '../types';
 
 // Target products to mine complaints for
+// NICHE FOCUS: Smaller verticals = less competition = better opportunities!
 const TARGET_PRODUCTS = {
+  // === MAINSTREAM (keep a few for comparison) ===
   productivity: ['Notion', 'Slack', 'Asana', 'Trello', 'Monday', 'ClickUp'],
   finance: ['QuickBooks', 'Xero', 'FreshBooks', 'Wave'],
   crm: ['Salesforce', 'HubSpot', 'Pipedrive'],
-  email: ['Mailchimp', 'ConvertKit', 'ActiveCampaign'],
-  dev: ['Jira', 'GitHub Issues', 'Linear'],
-  design: ['Figma', 'Canva', 'Adobe'],
-  scheduling: ['Calendly', 'Acuity'],
-  forms: ['Typeform', 'Google Forms', 'JotForm'],
-  analytics: ['Google Analytics', 'Mixpanel', 'Amplitude']
+  
+  // === NICHE VERTICALS (the goldmine!) ===
+  
+  // Agriculture & Farming
+  farming: ['John Deere', 'Granular', 'FarmLogs', 'Bushel', 'AgriWebb', 'Conservis'],
+  
+  // Australian Real Estate
+  realestate_au: ['Domain', 'REA', 'PropertyMe', 'Console Cloud', 'PropertyTree', 'Rockend'],
+  
+  // Trades & Field Services
+  trades: ['ServiceM8', 'Tradify', 'Fergus', 'simPRO', 'Jobber', 'Housecall Pro'],
+  
+  // Australian Legal
+  legal_au: ['LEAP', 'Actionstep', 'Smokeball', 'LawMaster', 'SILQ'],
+  
+  // Australian Medical/Health
+  medical_au: ['Cliniko', 'Halaxy', 'Nookal', 'Power Diary', 'Timely', 'Jane App'],
+  
+  // Australian Accounting
+  accounting_au: ['MYOB', 'Reckon', 'Saasu', 'Cashflow Manager'],
+  
+  // Retail & POS
+  retail: ['Vend', 'Lightspeed', 'Square POS', 'Shopify POS', 'Clover'],
+  
+  // Restaurants & Hospitality
+  restaurants: ['Toast POS', 'TouchBistro', 'Lightspeed Restaurant', 'Square for Restaurants', 'Revel'],
+  
+  // Fitness & Gyms
+  gyms: ['Mindbody', 'Glofox', 'Wodify', 'Zen Planner', 'PushPress', 'Gymdesk'],
+  
+  // Churches & Nonprofits
+  churches: ['Planning Center', 'Pushpay', 'Tithe.ly', 'Breeze', 'ChurchTrac', 'Realm'],
+  
+  // Schools & Education
+  schools: ['Compass', 'SEQTA', 'Canvas', 'Schoology', 'PowerSchool', 'Blackboard'],
+  
+  // Construction
+  construction: ['Procore', 'Buildertrend', 'CoConstruct', 'PlanGrid', 'Fieldwire', 'BuilderPrime'],
+  
+  // Photography & Creative Services
+  photography: ['Honeybook', 'Dubsado', '17hats', 'Studio Ninja', 'Táve', 'Pixieset'],
+  
+  // Music & Lessons
+  music_teachers: ['My Music Staff', 'TakeLessons', 'Fons', 'Music Teacher\'s Helper', 'Duet Partner'],
+  
+  // Pet Services
+  pet_services: ['PetDesk', 'Gingr', 'Time To Pet', 'Pet Sitter Plus', 'ProPet Software', 'DaySmart Pet'],
+  
+  // Salon & Beauty
+  salons: ['Vagaro', 'Fresha', 'Booksy', 'Boulevard', 'GlossGenius', 'Schedulicity'],
+  
+  // Auto & Mechanics
+  automotive: ['Shop-Ware', 'Mitchell 1', 'Tekmetric', 'AutoLeap', 'Shopmonkey']
 };
 
 // All products flattened
@@ -230,8 +279,9 @@ async function storeCompetitorMention(
 
 /**
  * Get the next products to mine (rotates through list)
+ * Increased to 8 per cycle for larger product list
  */
-async function getNextProductsToMine(db: D1Database, count: number = 5): Promise<string[]> {
+async function getNextProductsToMine(db: D1Database, count: number = 8): Promise<string[]> {
   // Get current index
   const state = await db.prepare(
     "SELECT value FROM processing_state WHERE key = 'competitor_index'"

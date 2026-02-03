@@ -1,6 +1,6 @@
-// v7 API client - Embedding-based clustering
+// v9 API client - Embedding-based clustering + Competitor Mining
 
-const API_BASE = 'https://ideas.koda-software.com';
+export const API_BASE = 'https://ideas.koda-software.com';
 
 export async function fetchOpportunities(limit: number = 50, minMentions: number = 5, showAll: boolean = false) {
   const params = new URLSearchParams({

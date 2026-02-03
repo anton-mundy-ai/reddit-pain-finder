@@ -72,6 +72,10 @@ export interface Stats {
   qualifying_clusters: number; // 5+ members
   products_generated: number;
   avg_cluster_size?: number;   // v7: average mentions per cluster
+  // v9: competitor mining stats
+  competitor_complaints?: number;
+  competitor_products?: number;
+  competitor_feature_gaps?: number;
   version: string;
   last_updated: number;
 }

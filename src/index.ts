@@ -9,6 +9,7 @@ import { runClustering, getClusterMembers, mergeSimularClusters, updateClusterSt
 import { runSynthesis } from './layers/synthesis';
 import { runScoring, getTopOpportunities } from './layers/scoring';
 import { runTopicMerge, shouldRunTopicMerge, incrementCronCount } from './layers/topic-merge';
+import { runCompetitorMining, getCompetitorStats, getProductComplaints, getFeatureGaps, getCategoryStats, ALL_PRODUCTS } from './layers/competitor-mining';
 import { generateEmbeddingsBatch, storeEmbedding } from './utils/embeddings';
 import { normalizeTopic, extractBroadCategory } from './utils/normalize';
 
@@ -42,9 +43,71 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (path === '/health' || path === '/') {
     return jsonResponse({ 
       status: 'ok', 
-      version: 'v8-quality',
+      version: 'v9-competitors',
       timestamp: Date.now() 
     });
+  }
+  
+  // ===============================
+  // v9: Competitor Mining Endpoints
+  // ===============================
+  
+  // Get all competitors with complaint counts
+  if (path === '/api/competitors') {
+    try {
+      const stats = await getCompetitorStats(env.DB);
+      const categoryStats = await getCategoryStats(env.DB);
+      
+      return jsonResponse({ 
+        competitors: stats,
+        categories: categoryStats,
+        products_tracked: ALL_PRODUCTS.length
+      });
+    } catch (error) {
+      console.error('Error fetching competitor stats:', error);
+      return jsonResponse({ error: 'Failed to fetch competitor stats' }, 500);
+    }
+  }
+  
+  // Get complaints for a specific product
+  if (path.startsWith('/api/competitors/') && !path.includes('/feature-gaps')) {
+    const product = decodeURIComponent(path.split('/').pop() || '');
+    if (!product) return jsonResponse({ error: 'Invalid product' }, 400);
+    
+    try {
+      const complaints = await getProductComplaints(env.DB, product, 100);
+      const stats = await env.DB.prepare(`
+        SELECT 
+          COUNT(*) as total,
+          SUM(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) as negative,
+          SUM(CASE WHEN sentiment = 'frustrated' THEN 1 ELSE 0 END) as frustrated,
+          SUM(CASE WHEN feature_gap IS NOT NULL THEN 1 ELSE 0 END) as with_feature_gap,
+          AVG(score) as avg_score
+        FROM competitor_mentions WHERE product_name = ?
+      `).bind(product).first();
+      
+      return jsonResponse({ 
+        product,
+        complaints,
+        stats
+      });
+    } catch (error) {
+      console.error('Error fetching product complaints:', error);
+      return jsonResponse({ error: 'Failed to fetch product complaints' }, 500);
+    }
+  }
+  
+  // Get aggregated feature gaps
+  if (path === '/api/feature-gaps') {
+    const limit = parseInt(url.searchParams.get('limit') || '100');
+    
+    try {
+      const gaps = await getFeatureGaps(env.DB, limit);
+      return jsonResponse({ feature_gaps: gaps });
+    } catch (error) {
+      console.error('Error fetching feature gaps:', error);
+      return jsonResponse({ error: 'Failed to fetch feature gaps' }, 500);
+    }
   }
 
   // v7: Get opportunities with filter control
@@ -273,6 +336,15 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         env.DB.prepare("SELECT AVG(social_proof_count) as avg FROM pain_clusters WHERE social_proof_count > 0").first(),
       ]);
 
+      // v9: Add competitor stats
+      const competitorStats = await env.DB.prepare(`
+        SELECT 
+          COUNT(*) as total_complaints,
+          COUNT(DISTINCT product_name) as products_tracked,
+          SUM(CASE WHEN feature_gap IS NOT NULL THEN 1 ELSE 0 END) as feature_gaps
+        FROM competitor_mentions
+      `).first().catch(() => ({ total_complaints: 0, products_tracked: 0, feature_gaps: 0 }));
+      
       return jsonResponse({
         raw_posts: (postsCount as any)?.count || 0,
         raw_comments: (commentsCount as any)?.count || 0,
@@ -285,7 +357,11 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         qualifying_clusters: (qualifyingClusters as any)?.count || 0,  // 5+ members
         products_generated: (productCount as any)?.count || 0,
         avg_cluster_size: Math.round(((avgClusterSize as any)?.avg || 0) * 10) / 10,
-        version: 'v8-quality',
+        // v9: Competitor mining stats
+        competitor_complaints: (competitorStats as any)?.total_complaints || 0,
+        competitor_products: (competitorStats as any)?.products_tracked || 0,
+        competitor_feature_gaps: (competitorStats as any)?.feature_gaps || 0,
+        version: 'v9-competitors',
         last_updated: Date.now()
       });
     } catch (error) {
@@ -349,6 +425,46 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (path === '/api/trigger/full' && request.method === 'POST') {
     const results = await runFullPipeline(env);
     return jsonResponse({ success: true, results });
+  }
+  
+  // v9: Competitor mining trigger
+  if (path === '/api/trigger/mine-competitors' && request.method === 'POST') {
+    const result = await runCompetitorMining(env);
+    return jsonResponse({ success: true, result });
+  }
+  
+  // v9: Migration endpoint for competitor_mentions table
+  if (path === '/api/trigger/migrate-v9' && request.method === 'POST') {
+    try {
+      // Create table
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS competitor_mentions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          product_name TEXT NOT NULL,
+          category TEXT,
+          complaint_text TEXT NOT NULL,
+          source_type TEXT,
+          source_url TEXT,
+          author TEXT,
+          score INTEGER DEFAULT 0,
+          sentiment TEXT,
+          feature_gap TEXT,
+          created_at INTEGER NOT NULL,
+          UNIQUE(source_url)
+        )
+      `).run();
+      
+      // Create indexes separately
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_competitor_product ON competitor_mentions(product_name)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_competitor_category ON competitor_mentions(category)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_competitor_sentiment ON competitor_mentions(sentiment)`).run();
+      await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_competitor_score ON competitor_mentions(score DESC)`).run();
+      
+      return jsonResponse({ success: true, message: 'v9 migration complete - competitor_mentions table created' });
+    } catch (error) {
+      console.error('v9 migration error:', error);
+      return jsonResponse({ error: `Migration failed: ${error}` }, 500);
+    }
   }
   
   // Reset endpoint
@@ -545,10 +661,10 @@ async function fixAllClusterStats(env: Env): Promise<{ fixed: number }> {
 }
 
 async function runFullPipeline(env: Env): Promise<any> {
-  const results: any = { version: 'v8' };
+  const results: any = { version: 'v9' };
   
   console.log('\n========================================');
-  console.log('Running v8 Pipeline: High Quality Clustering');
+  console.log('Running v9 Pipeline: Competitor Mining + Clustering');
   console.log('========================================\n');
   
   // Increment cron counter for topic merge scheduling
@@ -568,6 +684,12 @@ async function runFullPipeline(env: Env): Promise<any> {
     hn_comments_ingested: ingestion1.hn_comments_ingested + ingestion2.hn_comments_ingested,
     subreddits_processed: ingestion1.subreddits_processed + ingestion2.subreddits_processed
   };
+  
+  // v9: Run competitor mining every 3rd cron (after ingestion)
+  if (cronCount % 3 === 0) {
+    console.log('\nStep 1.5: Competitor complaint mining (every 3rd cron)...');
+    results.competitor_mining = await runCompetitorMining(env);
+  }
   
   console.log('\nStep 2: Binary filter (Nano)...');
   results.extraction = await runExtraction(env);
@@ -597,7 +719,7 @@ async function runFullPipeline(env: Env): Promise<any> {
   results.scoring = await runScoring(env);
   
   console.log('\n========================================');
-  console.log('v8 Pipeline Complete!');
+  console.log('v9 Pipeline Complete!');
   console.log('========================================\n');
   
   return results;

@@ -21,18 +21,35 @@ Find people complaining about existing products = validated pain + **proven will
 - Sentiment detection
 - Feature gap extraction ("I wish it had...", "It doesn't do...")
 
-### Target Products
+### Target Products (165+ total!)
+
+**Mainstream (for comparison)**
 | Category | Products |
 |----------|----------|
 | Productivity | Notion, Slack, Asana, Trello, Monday, ClickUp |
 | Finance | QuickBooks, Xero, FreshBooks, Wave |
 | CRM | Salesforce, HubSpot, Pipedrive |
-| Email | Mailchimp, ConvertKit, ActiveCampaign |
-| Dev | Jira, GitHub Issues, Linear |
-| Design | Figma, Canva, Adobe |
-| Scheduling | Calendly, Acuity |
-| Forms | Typeform, Google Forms, JotForm |
-| Analytics | Google Analytics, Mixpanel, Amplitude |
+
+**🎯 NICHE VERTICALS (the goldmine!)**
+| Category | Products |
+|----------|----------|
+| Farming | John Deere, Granular, FarmLogs, Bushel, AgriWebb |
+| Real Estate AU | Domain, REA, PropertyMe, Console Cloud, PropertyTree |
+| Trades | ServiceM8, Tradify, Fergus, simPRO, Jobber |
+| Legal AU | LEAP, Actionstep, Smokeball, LawMaster |
+| Medical AU | Cliniko, Halaxy, Nookal, Power Diary, Jane App |
+| Accounting AU | MYOB, Reckon, Saasu, Cashflow Manager |
+| Retail | Vend, Lightspeed, Square POS, Shopify POS |
+| Restaurants | Toast POS, TouchBistro, Lightspeed Restaurant, Revel |
+| Gyms | Mindbody, Glofox, Wodify, Zen Planner, PushPress |
+| Churches | Planning Center, Pushpay, Tithe.ly, Breeze, ChurchTrac |
+| Schools | Compass, SEQTA, Canvas, Schoology, PowerSchool |
+| Construction | Procore, Buildertrend, CoConstruct, PlanGrid |
+| Photography | Honeybook, Dubsado, 17hats, Studio Ninja |
+| Music Teachers | My Music Staff, TakeLessons, Fons |
+| Pet Services | PetDesk, Gingr, Time To Pet, DaySmart Pet |
+| Salons | Vagaro, Fresha, Booksy, Boulevard, GlossGenius |
+| Automotive | Shop-Ware, Mitchell 1, Tekmetric, Shopmonkey |
 
 ### API Endpoints
 - `GET /api/competitors` - List products with complaint counts
